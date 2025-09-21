@@ -1,0 +1,28 @@
+COMPLIANCE CHECK RESULTS
+==================================================
+Device: 52106f19b8bc352f
+Checked: 2025-09-21 16:18:34
+
+
+GDPR COMPLIANCE
+------------------------------
+Overall Status: NEEDS_REVIEW
+
+✓ Data Encryption: PASS
+   Details: Encrypted (block)
+
+✗ Screen Lock Active: FAIL
+   Details: Screen lock disabled
+
+
+ISO27001 COMPLIANCE
+------------------------------
+Overall Status: NEEDS_REVIEW
+
+? Device Administration: REVIEW
+   Details: No Device Admin
+
+? USB Debugging Control: REVIEW
+   Details: USB debugging enabled
+
+

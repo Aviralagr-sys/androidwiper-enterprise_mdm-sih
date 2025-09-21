@@ -1,0 +1,142 @@
+[
+  {
+    "timestamp": "2025-09-21T16:32:34.204380",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:00.386361",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "GDPR compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:01.362100",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "ISO27001 compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:02.403978",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "GDPR compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:03.424859",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "ISO27001 compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:04.219123",
+    "operation": "POLICY_APPLY",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "screen_timeout: Screen timeout set to 15 minutes"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:05.922924",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:09.850416",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "GDPR compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:10.928406",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "ISO27001 compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:19.668681",
+    "operation": "POLICY_APPLY",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "screen_timeout: Screen timeout set to 15 minutes"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:37.592620",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:37.930705",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "GDPR compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:38.882515",
+    "operation": "COMPLIANCE_CHECK",
+    "device_id": "52106f19b8bc352f",
+    "status": "NEEDS_REVIEW",
+    "details": "ISO27001 compliance check"
+  },
+  {
+    "timestamp": "2025-09-21T16:33:45.509721",
+    "operation": "POLICY_APPLY",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "screen_timeout: Screen timeout set to 15 minutes"
+  },
+  {
+    "timestamp": "2025-09-21T16:34:09.294320",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:34:30.109189",
+    "operation": "DATA_SANITIZATION",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "Standard: NIST_800_88, Operations: 7"
+  },
+  {
+    "timestamp": "2025-09-21T16:34:40.774489",
+    "operation": "SANITIZATION_VERIFICATION",
+    "device_id": "52106f19b8bc352f",
+    "status": "PASSED",
+    "details": "Verified 7 locations"
+  },
+  {
+    "timestamp": "2025-09-21T16:34:41.028392",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:35:12.704606",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  },
+  {
+    "timestamp": "2025-09-21T16:35:44.345119",
+    "operation": "DEVICE_DETECTED",
+    "device_id": "52106f19b8bc352f",
+    "status": "SUCCESS",
+    "details": "samsung SM-G610F"
+  }
+]
