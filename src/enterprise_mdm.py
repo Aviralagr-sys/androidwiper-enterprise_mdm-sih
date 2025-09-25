@@ -259,7 +259,7 @@ class FactoryResetEngine:
         # This would integrate with the main authentication system
         return True  # Placeholder
     
-    def perform_factory_reset(self, device_id, reason, progress_callback=None):
+def perform_factory_reset(self, device_id, reason, progress_callback=None):
     """Perform factory reset operation"""
     try:
         # Step 1: Log the initiation of the factory reset
@@ -293,7 +293,6 @@ class FactoryResetEngine:
             progress_callback("Verifying factory reset completion...", 90)
         self.log_callback("Factory Reset: Verifying completion...")
 
-        # Optional: Check if device is still connected (it may not be after reset)
         verify_result = subprocess.run(
             ['adb', '-s', device_id, 'shell', 'echo', 'test'],
             capture_output=True, text=True, timeout=10
