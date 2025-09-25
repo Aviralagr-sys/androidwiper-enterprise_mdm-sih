@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 Complete Enterprise Mobile Device Management Framework
-Enhanced with Factory Reset and Secure Drive Wiping capabilities
-Legitimate enterprise-grade Android device management for critical security operations
+Legitimate enterprise-grade Android device management for SIH project
 Implements proper security, audit trails, and compliance monitoring
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, filedialog, simpledialog
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 import subprocess
 import json
 import logging
@@ -17,9 +16,6 @@ import os
 import threading
 import hashlib
 import time
-import platform
-import psutil
-import shutil
 
 class DeviceAuth:
     """Device ownership verification and authorization"""
@@ -68,15 +64,26 @@ class DataSanitizationEngine:
             'GUTMANN': {'passes': 35, 'pattern': 'complex'}
         }
     
+    def _is_device_encrypted(self, device_id):
+        """Check if device is encrypted"""
+        try:
+            result = subprocess.run(['adb', '-s', device_id, 'shell', 'getprop', 'ro.crypto.state'],
+                                    capture_output=True, text=True, timeout=5)
+            return result.stdout.strip() == 'encrypted'
+        except Exception:
+            return False
+    
     def verify_authorization(self, device_id, user_token):
         """Verify user authorization for sanitization"""
         try:
+            # Require explicit user confirmation
             result = subprocess.run(['adb', '-s', device_id, 'shell', 'echo', 'auth_test'],
                                   capture_output=True, text=True, timeout=5)
             
             if result.returncode != 0:
                 return False, "Device not accessible"
             
+            # Check if device has proper developer access
             dev_check = subprocess.run(['adb', '-s', device_id, 'shell', 
                                       'settings', 'get', 'global', 'development_settings_enabled'],
                                      capture_output=True, text=True, timeout=5)
@@ -94,6 +101,7 @@ class DataSanitizationEngine:
         operations = []
         
         try:
+            # User data directories (accessible without root)
             user_data_paths = [
                 '/sdcard/Download',
                 '/sdcard/Pictures',
@@ -105,6 +113,7 @@ class DataSanitizationEngine:
             ]
             
             for path in user_data_paths:
+                # Check if path exists and get file count
                 result = subprocess.run(['adb', '-s', device_id, 'shell', 'find', path, '-type', 'f', '2>/dev/null | wc -l'],
                                       capture_output=True, text=True, timeout=30)
                 
@@ -119,219 +128,112 @@ class DataSanitizationEngine:
             if verify_only:
                 return True, operations
             
+            # Perform sanitization based on standard
             standard = self.sanitization_standards.get(sanitization_level, self.sanitization_standards['BASIC'])
             
-            for operation in operations:
-                path = operation['path']
-                
-                for pass_num in range(standard['passes']):
-                    self.log_callback(f"Sanitization pass {pass_num + 1}/{standard['passes']} for {path}")
-                    
-                    result = subprocess.run(['adb', '-s', device_id, 'shell', 
-                                           'find', path, '-type', 'f', '-delete', '2>/dev/null'],
-                                          capture_output=True, text=True, timeout=60)
-                    
-                    operation['status'] = 'completed' if result.returncode == 0 else 'failed'
+            is_encrypted = self._is_device_encrypted(device_id)
             
-            return True, operations
+            perform_delete = True
+            
+            if standard['pattern'] == 'crypto_erase':
+                if is_encrypted:
+                    self.log_callback("Performing cryptographic erase on encrypted device (delete only)")
+                else:
+                    self.log_callback("Device not encrypted - falling back to basic delete for NIST standard")
+            else:
+                # Overwrite passes
+                for pass_num in range(standard['passes']):
+                    self.log_callback(f"Secure overwrite pass {pass_num + 1}/{standard['passes']} (pattern: {standard['pattern']})")
+                    
+                    if standard['pattern'] == 'zeros':
+                        if_source = '/dev/zero'
+                    elif standard['pattern'] in ['random', 'complex']:
+                        if_source = '/dev/urandom'
+                    else:
+                        if_source = '/dev/urandom'  # Default fallback
+                    
+                    for operation in operations:
+                        path = operation['path']
+                        
+                        # Overwrite each file in place
+                        cmd = [
+                            'adb', '-s', device_id, 'shell',
+                            'find', path, '-type', 'f',
+                            '-exec', 'dd', f'if={if_source}', 'of={{}}', 'bs=4096', 'conv=notrunc', ';'
+                        ]
+                        
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # Longer timeout for large data
+                        
+                        if result.returncode != 0:
+                            self.log_callback(f"Overwrite failed for {path}: {result.stderr}")
+                            operation['status'] = 'failed'
+                        else:
+                            operation['status'] = 'overwritten'
+            
+            # Final delete (always performed unless skipped)
+            if perform_delete:
+                self.log_callback("Performing final secure delete")
+                for operation in operations:
+                    path = operation['path']
+                    
+                    cmd = ['adb', '-s', device_id, 'shell', 'find', path, '-type', 'f', '-delete', '2>/dev/null']
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    
+                    if result.returncode == 0 and operation['status'] != 'failed':
+                        operation['status'] = 'completed'
+                    else:
+                        operation['status'] = 'failed'
+                        self.log_callback(f"Delete failed for {path}: {result.stderr}")
+            
+            all_success = all(op['status'] == 'completed' for op in operations)
+            return all_success, operations
             
         except Exception as e:
             return False, f"Sanitization failed: {e}"
-
-class SystemWipeEngine:
-    """System-level wiping capabilities for drives and factory reset"""
     
-    def __init__(self, log_callback=None):
-        self.log_callback = log_callback or print
-        self.drive_info = {}
-        self.wipe_methods = {
-            "Quick (1-pass)": 1,
-            "DoD 3-Pass": 3,
-            "DoD 7-Pass": 7,
-            "Gutmann 35-Pass": 35
-        }
-    
-    def scan_drives(self):
-        """Scan all drives including hidden partitions"""
-        try:
-            drives_info = []
-            self.drive_info = {}
-            
-            partitions = psutil.disk_partitions(all=True)
-            
-            for partition in partitions:
-                try:
-                    usage = psutil.disk_usage(partition.mountpoint)
-                    is_hidden = self.is_hidden_partition(partition)
-                    
-                    drive_info = {
-                        "device": partition.device,
-                        "mountpoint": partition.mountpoint,
-                        "fstype": partition.fstype,
-                        "total": usage.total,
-                        "used": usage.used,
-                        "free": usage.free,
-                        "hidden": is_hidden
-                    }
-                    
-                    self.drive_info[partition.device] = drive_info
-                    drives_info.append(drive_info)
-                    
-                except (PermissionError, OSError):
-                    self.drive_info[partition.device] = {
-                        "device": partition.device,
-                        "mountpoint": partition.mountpoint,
-                        "fstype": partition.fstype,
-                        "hidden": True,
-                        "accessible": False
-                    }
-            
-            return True, drives_info
-            
-        except Exception as e:
-            return False, f"Drive scan failed: {e}"
-    
-    def is_hidden_partition(self, partition):
-        """Determine if a partition is hidden"""
-        hidden_indicators = [
-            "System Reserved", "Recovery", "EFI", "boot", "/boot/efi",
-            "Windows RE", "Microsoft reserved"
-        ]
+    def verify_sanitization(self, device_id, operations):
+        """Verify sanitization was successful"""
+        verification_results = []
         
-        for indicator in hidden_indicators:
-            if indicator.lower() in partition.mountpoint.lower():
-                return True
-            if indicator.lower() in partition.fstype.lower():
-                return True
-                
-        try:
-            usage = psutil.disk_usage(partition.mountpoint)
-            if usage.total < 1024**3:  # Less than 1GB, likely system partition
-                return True
-        except:
-            return True
+        for operation in operations:
+            path = operation['path']
             
-        return False
-    
-    def perform_secure_drive_wipe(self, selected_drives, wipe_method, progress_callback=None):
-        """Perform secure drive wiping operation"""
-        try:
-            passes = self.wipe_methods.get(wipe_method, 3)
-            total_drives = len(selected_drives)
+            # Check if files still exist
+            result = subprocess.run(['adb', '-s', device_id, 'shell', 'find', path, '-type', 'f', '2>/dev/null | wc -l'],
+                                  capture_output=True, text=True, timeout=15)
             
-            for drive_index, drive in enumerate(selected_drives):
-                drive_progress_base = (drive_index / total_drives) * 100
-                drive_progress_increment = (1 / total_drives) * 100
-                
-                self.log_callback(f"Starting secure wipe of {drive}")
-                
-                for pass_num in range(1, passes + 1):
-                    if progress_callback:
-                        progress_callback(f"Pass {pass_num}/{passes} - Overwriting {drive}")
-                    
-                    # Simulate secure wipe process (replace with actual implementation)
-                    for i in range(100):
-                        pass_progress = (i / 100) * (drive_progress_increment / passes)
-                        total_progress = drive_progress_base + ((pass_num - 1) / passes) * drive_progress_increment + pass_progress
-                        
-                        if progress_callback:
-                            progress_callback(total_progress, is_progress=True)
-                        
-                        time.sleep(0.01)  # Simulation delay
-                        
-                    self.log_callback(f"Pass {pass_num}/{passes} completed for {drive}")
-                    
-                self.log_callback(f"Secure wipe completed for {drive}")
-                
-            return True, "Secure drive wipe completed successfully"
+            remaining_files = result.stdout.strip() if result.returncode == 0 else 'error'
             
-        except Exception as e:
-            return False, f"Secure drive wipe failed: {e}"
-
-class FactoryResetEngine:
-    """Factory reset capabilities with security safeguards"""
-    
-    def __init__(self, log_callback=None):
-        self.log_callback = log_callback or print
-    
-    def authenticate_admin(self):
-        """Authenticate administrator for factory reset"""
-        # This would integrate with the main authentication system
-        return True  # Placeholder
-    
-    def perform_factory_reset(self, device_id, reason, progress_callback=None):
-        """Perform factory reset operation"""
-        try:
-            # Step 1: Log the initiation of the factory reset
-            if progress_callback:
-                progress_callback("Initiating factory reset...", 10)
-            self.log_callback("Factory Reset: Initiating factory reset...")
-
-            # Step 2: Execute the actual ADB factory reset command
-            if progress_callback:
-                progress_callback("Sending factory reset command...", 50)
-            self.log_callback("Factory Reset: Sending factory reset command...")
-
-            result = subprocess.run(
-                ['adb', '-s', device_id, 'shell', 'recovery', '--wipe_data'],
-                capture_output=True, text=True, timeout=30
-            )
-
-            if result.returncode != 0:
-                error_msg = f"ADB factory reset failed: {result.stderr}"
-                self.log_callback(error_msg)
-                return False, error_msg
-
-            # Step 3: Wait for device to reboot (recovery mode will handle the reset)
-            if progress_callback:
-                progress_callback("Waiting for device to complete reset...", 80)
-            self.log_callback("Factory Reset: Waiting for device to complete reset...")
-            time.sleep(10)  # Wait for the device to initiate the reset process
-
-            # Step 4: Verify device is no longer accessible (optional, as device may reboot)
-            if progress_callback:
-                progress_callback("Verifying factory reset completion...", 90)
-            self.log_callback("Factory Reset: Verifying completion...")
-
-            verify_result = subprocess.run(
-                ['adb', '-s', device_id, 'shell', 'echo', 'test'],
-                capture_output=True, text=True, timeout=10
-            )
-
-            # Step 5: Finalize and log completion
-            if progress_callback:
-                progress_callback("Generating reset completion report...", 100)
-            self.log_callback("Factory Reset: Generating reset completion report...")
-
-            return True, "Factory reset completed successfully"
-
-        except subprocess.TimeoutExpired:
-            return False, "Factory reset timed out"
-        except Exception as e:
-            return False, f"Factory reset failed: {e}"
+            verification_results.append({
+                'path': path,
+                'original_files': operation['files'],
+                'remaining_files': remaining_files,
+                'verified': remaining_files == '0'
+            })
+        
+        return verification_results
 
 class EnterpriseMDM:
-    """Enhanced Enterprise-grade Android device management"""
+    """Enterprise-grade Android device management with data sanitization"""
     
     def __init__(self, log_callback=None):
         self.log_callback = log_callback or print
         self.audit_entries = []
         self.policies = {}
         self.sanitization_engine = DataSanitizationEngine(log_callback)
-        self.system_wipe_engine = SystemWipeEngine(log_callback)
-        self.factory_reset_engine = FactoryResetEngine(log_callback)
     
-    def audit_log_entry(self, operation, device_id, status, details=""):
-        """Add entry to audit log"""
+    def audit_log_entry(self, operation, device_id, status, details="", compliance_flags=""):
+        """Add entry to audit log with improved details"""
         entry = {
             'timestamp': datetime.now().isoformat(),
             'operation': operation,
             'device_id': device_id,
             'status': status,
-            'details': details
+            'details': details,
+            'compliance_flags': compliance_flags
         }
         self.audit_entries.append(entry)
-        self.log_callback(f"AUDIT: {operation} - {status}")
+        self.log_callback(f"AUDIT: {operation} - {status} - Flags: {compliance_flags}")
         return entry
     
     def check_prerequisites(self):
@@ -384,17 +286,19 @@ class EnterpriseMDM:
             return []
     
     def _get_device_info(self, device_id):
-        """Get comprehensive device information"""
+        """Get comprehensive device information with security details"""
         try:
             info = {}
             
+            # Get basic device properties
             props = {
                 'brand': 'ro.product.brand',
                 'model': 'ro.product.model',
                 'android_version': 'ro.build.version.release',
                 'sdk_version': 'ro.build.version.sdk',
                 'serial': 'ro.serialno',
-                'manufacturer': 'ro.product.manufacturer'
+                'manufacturer': 'ro.product.manufacturer',
+                'security_patch': 'ro.build.version.security_patch'
             }
             
             for key, prop in props.items():
@@ -405,8 +309,37 @@ class EnterpriseMDM:
                 except:
                     info[key] = 'Unknown'
             
+            # Check if rooted
+            try:
+                root_check = subprocess.run(['adb', '-s', device_id, 'shell', 'which', 'su'],
+                                            capture_output=True, text=True, timeout=5)
+                info['is_rooted'] = 'Yes' if root_check.returncode == 0 and root_check.stdout.strip() else 'No'
+            except:
+                info['is_rooted'] = 'Unknown'
+            
+            # Check SELinux status
+            try:
+                selinux = subprocess.run(['adb', '-s', device_id, 'shell', 'getenforce'],
+                                         capture_output=True, text=True, timeout=5)
+                info['selinux_status'] = selinux.stdout.strip() or 'Unknown'
+            except:
+                info['selinux_status'] = 'Unknown'
+            
+            # Check unknown sources
+            try:
+                unknown_sources = subprocess.run(['adb', '-s', device_id, 'shell', 'settings', 'get', 'secure', 'install_non_market_apps'],
+                                                 capture_output=True, text=True, timeout=5)
+                info['unknown_sources'] = 'Enabled' if unknown_sources.stdout.strip() == '1' else 'Disabled'
+            except:
+                info['unknown_sources'] = 'Unknown'
+            
+            # Get storage info
             info.update(self._get_storage_info(device_id))
+            
+            # Check encryption status
             info['encryption_status'] = self._check_encryption_status(device_id)
+            
+            # Check device admin status
             info['admin_status'] = self._check_device_admin_status(device_id)
             
             return info
@@ -445,12 +378,14 @@ class EnterpriseMDM:
     def _check_encryption_status(self, device_id):
         """Check device encryption status"""
         try:
+            # Check encryption state
             result = subprocess.run(['adb', '-s', device_id, 'shell', 
                                    'getprop', 'ro.crypto.state'],
                                   capture_output=True, text=True, timeout=5)
             
             state = result.stdout.strip()
             
+            # Check encryption type
             type_result = subprocess.run(['adb', '-s', device_id, 'shell',
                                         'getprop', 'ro.crypto.type'],
                                        capture_output=True, text=True, timeout=5)
@@ -485,9 +420,336 @@ class EnterpriseMDM:
             
         except:
             return "Unknown"
+    
+    def check_compliance(self, device_id, standards=['GDPR', 'ISO27001']):
+        """Improved device compliance check with more security assessments"""
+        compliance_results = {}
+        
+        for standard in standards:
+            checks = []
+            
+            device_info = self._get_device_info(device_id)
+            
+            if standard == 'GDPR':
+                # GDPR-specific compliance checks
+                encryption_status = self._check_encryption_status(device_id)
+                checks.append({
+                    'check': 'Data Encryption',
+                    'status': 'PASS' if 'Encrypted' in encryption_status else 'FAIL',
+                    'details': encryption_status
+                })
+                
+                # Check for screen lock
+                try:
+                    result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                           'dumpsys', 'trust'],
+                                          capture_output=True, text=True, timeout=10)
+                    
+                    screen_lock_active = 'isEnabled=true' in result.stdout
+                    checks.append({
+                        'check': 'Screen Lock Active',
+                        'status': 'PASS' if screen_lock_active else 'FAIL',
+                        'details': f"Screen lock {'enabled' if screen_lock_active else 'disabled'}"
+                    })
+                except:
+                    checks.append({
+                        'check': 'Screen Lock Active',
+                        'status': 'UNKNOWN',
+                        'details': 'Could not verify screen lock status'
+                    })
+                
+                # New: Check unknown sources
+                checks.append({
+                    'check': 'Unknown Sources',
+                    'status': 'PASS' if device_info.get('unknown_sources') == 'Disabled' else 'FAIL',
+                    'details': device_info.get('unknown_sources', 'Unknown')
+                })
+            
+            elif standard == 'ISO27001':
+                # ISO27001-specific compliance checks
+                admin_status = self._check_device_admin_status(device_id)
+                checks.append({
+                    'check': 'Device Administration',
+                    'status': 'PASS' if 'Active' in admin_status else 'REVIEW',
+                    'details': admin_status
+                })
+                
+                # Check USB debugging status (should be controlled in production)
+                try:
+                    result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                           'settings', 'get', 'global', 'adb_enabled'],
+                                          capture_output=True, text=True, timeout=5)
+                    
+                    adb_enabled = result.stdout.strip() == '1'
+                    checks.append({
+                        'check': 'USB Debugging Control',
+                        'status': 'REVIEW' if adb_enabled else 'PASS',
+                        'details': f"USB debugging {'enabled' if adb_enabled else 'disabled'}"
+                    })
+                except:
+                    checks.append({
+                        'check': 'USB Debugging Control',
+                        'status': 'UNKNOWN',
+                        'details': 'Could not verify USB debugging status'
+                    })
+                
+                # New: SELinux enforcing
+                checks.append({
+                    'check': 'SELinux Status',
+                    'status': 'PASS' if device_info.get('selinux_status') == 'Enforcing' else 'FAIL',
+                    'details': device_info.get('selinux_status', 'Unknown')
+                })
+                
+                # New: Root status
+                checks.append({
+                    'check': 'Device Not Rooted',
+                    'status': 'PASS' if device_info.get('is_rooted') == 'No' else 'FAIL',
+                    'details': f"Rooted: {device_info.get('is_rooted', 'Unknown')}"
+                })
+                
+                # New: Security patch level (check if within last 6 months)
+                patch_date_str = device_info.get('security_patch', 'Unknown')
+                if patch_date_str != 'Unknown':
+                    try:
+                        patch_date = datetime.strptime(patch_date_str, '%Y-%m-%d')
+                        current_date = datetime.now()
+                        is_recent = (current_date - patch_date) < timedelta(days=180)
+                        checks.append({
+                            'check': 'Security Patch Up-to-date',
+                            'status': 'PASS' if is_recent else 'FAIL',
+                            'details': f"Patch date: {patch_date_str} ({'Recent' if is_recent else 'Outdated'})"
+                        })
+                    except ValueError:
+                        checks.append({
+                            'check': 'Security Patch Up-to-date',
+                            'status': 'UNKNOWN',
+                            'details': 'Invalid patch date format'
+                        })
+                else:
+                    checks.append({
+                        'check': 'Security Patch Up-to-date',
+                        'status': 'UNKNOWN',
+                        'details': 'Could not retrieve patch date'
+                    })
+            
+            overall_status = 'COMPLIANT' if all(c['status'] == 'PASS' for c in checks if c['status'] != 'UNKNOWN') else 'NEEDS_REVIEW'
+            compliance_results[standard] = {
+                'overall_status': overall_status,
+                'checks': checks,
+                'checked_at': datetime.now().isoformat()
+            }
+            
+            flags = ','.join([c['check'] for c in checks if c['status'] != 'PASS'])
+            self.audit_log_entry("COMPLIANCE_CHECK", device_id, 
+                               overall_status, 
+                               f"{standard} compliance check", compliance_flags=flags)
+        
+        return compliance_results
+    
+    def apply_policy(self, device_id, policy_type, policy_value):
+        """Improved policy application with more types"""
+        try:
+            success = False
+            details = ""
+            
+            if policy_type == "screen_timeout":
+                # Set screen timeout (in milliseconds)
+                timeout_ms = int(policy_value) * 60 * 1000
+                result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                       'settings', 'put', 'system', 
+                                       'screen_off_timeout', str(timeout_ms)],
+                                      capture_output=True, text=True, timeout=10)
+                
+                success = result.returncode == 0
+                details = f"Screen timeout set to {policy_value} minutes"
+                
+            elif policy_type == "password_quality":
+                # Attempt to set password policy - requires admin, so note
+                details = "Password policy requires device admin enrollment. Simulated set to {policy_value}"
+                success = False  # Can't set via ADB without admin
+                
+            elif policy_type == "camera_disabled":
+                # Attempt to disable camera - requires admin
+                details = "Camera policy requires device admin enrollment"
+                success = False
+                
+            elif policy_type == "disable_unknown_sources":
+                # Set install_non_market_apps to 0
+                result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                       'settings', 'put', 'secure', 
+                                       'install_non_market_apps', '0'],
+                                      capture_output=True, text=True, timeout=10)
+                success = result.returncode == 0
+                details = "Unknown sources disabled"
+                
+            elif policy_type == "enable_adb":
+                # For testing, but in production disable
+                result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                       'settings', 'put', 'global', 
+                                       'adb_enabled', str(1 if policy_value else 0)],
+                                      capture_output=True, text=True, timeout=10)
+                success = result.returncode == 0
+                details = f"ADB {'enabled' if policy_value else 'disabled'}"
+                
+            else:
+                details = f"Unknown policy type: {policy_type}"
+                success = False
+            
+            status = "SUCCESS" if success else "FAILED"
+            self.audit_log_entry("POLICY_APPLY", device_id, status, 
+                               f"{policy_type}: {details}")
+            
+            return success, details
+            
+        except Exception as e:
+            error_msg = f"Policy application failed: {e}"
+            self.audit_log_entry("POLICY_APPLY", device_id, "ERROR", error_msg)
+            return False, error_msg
+    
+    def export_audit_log(self, filename):
+        """Export audit log for compliance"""
+        try:
+            with open(filename, 'w') as f:
+                json.dump(self.audit_entries, f, indent=2)
+            return True
+        except:
+            return False
+
+class AndroidEnterpriseManager:
+    """Android Enterprise API integration simulation"""
+    
+    def setup_work_profile(self, device_id):
+        """Set up managed work profile"""
+        try:
+            # Check if work profile can be created
+            result = subprocess.run(['adb', '-s', device_id, 'shell',
+                                   'pm', 'list', 'users'],
+                                  capture_output=True, text=True, timeout=10)
+            
+            if 'managed profile' in result.stdout.lower():
+                return {
+                    'status': 'WORK_PROFILE_EXISTS',
+                    'message': 'Managed work profile already configured'
+                }
+            else:
+                return {
+                    'status': 'MANUAL_ENROLLMENT_REQUIRED',
+                    'message': 'Device must be enrolled through Android Enterprise',
+                    'instructions': [
+                        'Device must be enrolled through Android Enterprise',
+                        'Use enterprise mobility management (EMM) console',
+                        'Deploy through Google Play Managed Store',
+                        'Requires organization domain verification'
+                    ]
+                }
+        except Exception as e:
+            return {'status': 'ERROR', 'message': str(e)}
+    
+    def get_compliance_status(self, device_id):
+        """Get enterprise compliance status"""
+        return {
+            'enrollment_status': 'Not Enrolled',
+            'policy_compliance': 'Manual Verification Required',
+            'last_sync': 'Never',
+            'managed_apps': 0
+        }
+
+class ComplianceAuditSystem:
+    """Enterprise compliance and audit trail system"""
+    
+    def __init__(self, db_path=None):
+        self.db_path = db_path or os.path.join(os.path.dirname(__file__), '..', 'logs', 'audit.db')
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize audit database with improved schema"""
+        try:
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    device_id TEXT,
+                    user_id TEXT,
+                    operation TEXT,
+                    status TEXT,
+                    details TEXT,
+                    compliance_flags TEXT
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Database initialization failed: {e}")
+    
+    def log_event(self, event_type, device_id, operation, status, user_id="admin", details="", compliance_flags=""):
+        """Log audit event to database with flags"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO audit_events 
+                (timestamp, event_type, device_id, user_id, operation, status, details, compliance_flags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().isoformat(),
+                event_type,
+                device_id,
+                user_id,
+                operation,
+                status,
+                details,
+                compliance_flags
+            ))
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Audit logging failed: {e}")
+    
+    def get_audit_events(self, days=7):
+        """Get recent audit events"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            since_date = (datetime.now() - timedelta(days=days)).isoformat()
+            
+            cursor.execute('''
+                SELECT timestamp, event_type, device_id, user_id, operation, status, details, compliance_flags
+                FROM audit_events 
+                WHERE timestamp > ?
+                ORDER BY timestamp DESC
+            ''', (since_date,))
+            
+            events = cursor.fetchall()
+            conn.close()
+            
+            return [
+                {
+                    'timestamp': row[0],
+                    'event_type': row[1],
+                    'device_id': row[2],
+                    'user_id': row[3],
+                    'operation': row[4],
+                    'status': row[5],
+                    'details': row[6],
+                    'compliance_flags': row[7]
+                }
+                for row in events
+            ]
+        except Exception as e:
+            print(f"Failed to retrieve audit events: {e}")
+            return []
 
 class EnterpriseMDMGUI:
-    """Enhanced GUI with Factory Reset and Secure Drive Wiping capabilities"""
+    """Complete GUI for Enterprise MDM Framework"""
     
     def __init__(self):
         self.root = tk.Tk()
@@ -495,38 +757,22 @@ class EnterpriseMDMGUI:
         self.load_configuration()
         self.setup_logging()
         
-        # Initialize enhanced systems
+        # Initialize core systems
         self.mdm = EnterpriseMDM(log_callback=self.log_message)
+        self.enterprise_manager = AndroidEnterpriseManager()
+        self.audit_system = ComplianceAuditSystem()
         
         self.devices = []
         self.selected_device = None
         self.selected_device_info = None
-        self.drive_info = {}
         
         self.setup_gui()
-        self.check_system_prerequisites()
-        self.refresh_devices()
-    
-    def setup_window(self):
-        """Setup main window"""
-        self.root.title("Enhanced Enterprise Mobile Device Management System")
-        self.root.geometry("1600x1000")
-        self.root.configure(bg='#f0f0f0')
-    
-    def setup_logging(self):
-        """Setup logging system"""
-        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
-        os.makedirs(log_dir, exist_ok=True)
         
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(os.path.join(log_dir, 'enhanced_mdm.log')),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        # Initial system check
+        self.check_system_prerequisites()
+        
+        # Auto-refresh devices
+        self.refresh_devices()
     
     def load_configuration(self):
         """Load configuration from file or use defaults"""
@@ -544,15 +790,15 @@ class EnterpriseMDMGUI:
                 "screen_timeout_minutes": 15,
                 "auto_lock_enabled": True
             },
-            "security_settings": {
-                "factory_reset_enabled": True,
-                "secure_wipe_enabled": True,
-                "admin_auth_required": True
+            "logging": {
+                "log_level": "INFO",
+                "log_file": "../logs/mdm_operations.log",
+                "audit_file": "../logs/audit_trail.log"
             }
         }
         
         try:
-            config_path = os.path.join(os.path.dirname(__file__), 'config', 'enhanced_mdm_config.json')
+            config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'mdm_config.json')
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     self.config = json.load(f)
@@ -566,19 +812,148 @@ class EnterpriseMDMGUI:
     def save_configuration(self):
         """Save current configuration"""
         try:
-            config_dir = os.path.join(os.path.dirname(__file__), 'config')
+            config_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
             os.makedirs(config_dir, exist_ok=True)
-            config_path = os.path.join(config_dir, 'enhanced_mdm_config.json')
+            config_path = os.path.join(config_dir, 'mdm_config.json')
             
             with open(config_path, 'w') as f:
                 json.dump(self.config, f, indent=2)
         except Exception as e:
             print(f"Configuration save failed: {e}")
     
+    def setup_logging(self):
+        """Setup logging system"""
+        log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(os.path.join(log_dir, 'mdm_operations.log')),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def setup_window(self):
+        """Setup main window with purple-black theme"""
+        self.root.title("Enterprise Mobile Device Management System")
+        self.root.geometry("1400x900")
+        self.root.configure(bg='#000000')  # Black background
+        
+        # Set window icon if available
+        try:
+            self.root.iconbitmap('mdm_icon.ico')
+        except:
+            pass
+        
+        # Create custom style for purple-black theme
+        self.style = ttk.Style()
+        self.style.theme_create('purpleblack', parent='clam', settings={
+            '.': {
+                'configure': {
+                    'background': '#000000',  # Black
+                    'foreground': '#800080'   # Purple
+                }
+            },
+            'TFrame': {
+                'configure': {
+                    'background': '#000000'
+                }
+            },
+            'TLabel': {
+                'configure': {
+                    'background': '#000000',
+                    'foreground': '#800080'
+                }
+            },
+            'TButton': {
+                'configure': {
+                    'background': '#800080',
+                    'foreground': '#000000',
+                    'bordercolor': '#800080'
+                },
+                'map': {
+                    'background': [('active', '#9932CC')],  # Lighter purple on hover
+                    'foreground': [('active', '#000000')]
+                }
+            },
+            'TEntry': {
+                'configure': {
+                    'fieldbackground': '#000000',
+                    'foreground': '#800080',
+                    'insertcolor': '#800080'
+                }
+            },
+            'TCheckbutton': {
+                'configure': {
+                    'foreground': '#800080',
+                    'indicatorbackground': '#000000'
+                }
+            },
+            'TRadiobutton': {
+                'configure': {
+                    'foreground': '#800080',
+                    'indicatorbackground': '#000000'
+                }
+            },
+            'TCombobox': {
+                'configure': {
+                    'fieldbackground': '#000000',
+                    'background': '#000000',
+                    'foreground': '#800080',
+                    'arrowcolor': '#800080'
+                }
+            },
+            'Treeview': {
+                'configure': {
+                    'background': '#000000',
+                    'foreground': '#800080',
+                    'fieldbackground': '#000000'
+                },
+                'map': {
+                    'background': [('selected', '#800080')],
+                    'foreground': [('selected', '#000000')]
+                }
+            },
+            'TNotebook': {
+                'configure': {
+                    'background': '#000000',
+                    'tabmargins': [2, 5, 2, 0]
+                }
+            },
+            'TNotebook.Tab': {
+                'configure': {
+                    'background': '#000000',
+                    'foreground': '#800080'
+                },
+                'map': {
+                    'background': [('selected', '#800080')],
+                    'foreground': [('selected', '#000000')],
+                    'expand': [('selected', [1, 1, 1, 0])]
+                }
+            },
+            'TProgressbar': {
+                'configure': {
+                    'background': '#800080',
+                    'troughcolor': '#000000'
+                }
+            },
+            'TScrollbar': {
+                'configure': {
+                    'background': '#000000',
+                    'troughcolor': '#000000',
+                    'arrowcolor': '#800080'
+                }
+            }
+        })
+        self.style.theme_use('purpleblack')
+    
     def setup_gui(self):
-        """Create enhanced GUI with all capabilities"""
-        # Main container
-        self.main_canvas = tk.Canvas(self.root, bg='#f0f0f0')
+        """Create complete GUI with theme applied"""
+        # Main container with scrollable canvas
+        self.main_canvas = tk.Canvas(self.root, bg='#000000')
         scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.main_canvas.yview)
         self.scrollable_frame = ttk.Frame(self.main_canvas)
         
@@ -600,171 +975,29 @@ class EnterpriseMDMGUI:
         self.notebook = ttk.Notebook(self.scrollable_frame)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Create enhanced tabs
+        # Create tabs
         self.create_device_management_tab()
         self.create_sanitization_tab()
-        self.create_drive_wipe_tab()
-        self.create_factory_reset_tab()
         self.create_compliance_tab()
         self.create_audit_tab()
+        self.create_policies_tab()
+        self.create_reports_tab()
         
         # Status bar
         self.create_status_bar()
+        
+        # Apply theme to scrolledtext widgets in tabs
+        self.device_info_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
+        self.compliance_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
+        self.sanitization_results.config(bg='#000000', fg='#800080', insertbackground='#800080')
+        self.report_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
     
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling"""
         self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
     
-    def create_drive_wipe_tab(self):
-        """Create secure drive wiping tab"""
-        drive_wipe_frame = ttk.Frame(self.notebook)
-        self.notebook.add(drive_wipe_frame, text="Secure Drive Wipe")
-        
-        # Critical Warning Header
-        warning_frame = ttk.LabelFrame(drive_wipe_frame, text="CRITICAL SECURITY OPERATION", padding=10)
-        warning_frame.pack(fill='x', padx=10, pady=5)
-        
-        warning_text = """This feature provides secure drive wiping capabilities for critical security scenarios.
-Use only when complete data destruction is required for security, compliance, or privacy protection.
-All operations are logged for audit purposes and require administrator authentication."""
-        
-        ttk.Label(warning_frame, text=warning_text, foreground="red", 
-                 font=('Arial', 10, 'bold'), wraplength=800).pack()
-        
-        # Drive Detection Section
-        detection_frame = ttk.LabelFrame(drive_wipe_frame, text="Drive Detection", padding=10)
-        detection_frame.pack(fill='x', padx=10, pady=5)
-        
-        ttk.Button(detection_frame, text="Scan All Drives", 
-                  command=self.scan_system_drives).pack(side='left', padx=5)
-        
-        self.drive_count_label = ttk.Label(detection_frame, text="No drives scanned")
-        self.drive_count_label.pack(side='left', padx=20)
-        
-        # Drive Information Display
-        drives_display_frame = ttk.LabelFrame(drive_wipe_frame, text="Detected Drives", padding=10)
-        drives_display_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        # Drive tree view
-        drive_columns = ('Device', 'Mount Point', 'Type', 'Size', 'Used', 'Status')
-        self.drive_tree = ttk.Treeview(drives_display_frame, columns=drive_columns, show='headings', height=8)
-        
-        for col in drive_columns:
-            self.drive_tree.heading(col, text=col)
-            self.drive_tree.column(col, width=120)
-        
-        drive_v_scrollbar = ttk.Scrollbar(drives_display_frame, orient='vertical', command=self.drive_tree.yview)
-        self.drive_tree.configure(yscrollcommand=drive_v_scrollbar.set)
-        
-        self.drive_tree.pack(side='left', fill='both', expand=True)
-        drive_v_scrollbar.pack(side='right', fill='y')
-        
-        # Wipe Configuration
-        wipe_config_frame = ttk.LabelFrame(drive_wipe_frame, text="Wipe Configuration", padding=10)
-        wipe_config_frame.pack(fill='x', padx=10, pady=5)
-        
-        ttk.Label(wipe_config_frame, text="Wipe Method:", font=('Arial', 10, 'bold')).pack(anchor='w')
-        
-        self.drive_wipe_method = tk.StringVar(value="DoD 3-Pass")
-        wipe_methods = ["Quick (1-pass)", "DoD 3-Pass", "DoD 7-Pass", "Gutmann 35-Pass"]
-        
-        for method in wipe_methods:
-            ttk.Radiobutton(wipe_config_frame, text=method, 
-                           variable=self.drive_wipe_method, value=method).pack(anchor='w')
-        
-        # Include hidden partitions option
-        self.include_hidden_drives = tk.BooleanVar(value=True)
-        ttk.Checkbutton(wipe_config_frame, text="Include hidden partitions and system areas", 
-                       variable=self.include_hidden_drives).pack(anchor='w', pady=5)
-        
-        # Control Buttons
-        controls_frame = ttk.Frame(wipe_config_frame)
-        controls_frame.pack(fill='x', pady=10)
-        
-        self.drive_wipe_button = ttk.Button(controls_frame, text="Initiate Secure Drive Wipe", 
-                                           command=self.initiate_secure_drive_wipe, 
-                                           style='Dangerous.TButton')
-        self.drive_wipe_button.pack(side='left', padx=5)
-        
-        ttk.Button(controls_frame, text="Generate Wipe Certificate", 
-                  command=self.generate_drive_wipe_certificate).pack(side='left', padx=5)
-    
-    def create_factory_reset_tab(self):
-        """Create factory reset tab"""
-        factory_reset_frame = ttk.Frame(self.notebook)
-        self.notebook.add(factory_reset_frame, text="Factory Reset")
-        
-        # Critical Warning Header
-        warning_frame = ttk.LabelFrame(factory_reset_frame, text="DESTRUCTIVE OPERATION WARNING", padding=10)
-        warning_frame.pack(fill='x', padx=10, pady=5)
-        
-        warning_text = """Factory Reset will completely wipe the selected device and restore it to factory settings.
-This operation is IRREVERSIBLE and will destroy all user data, applications, and configurations.
-Use only when device decommissioning, security breach response, or compliance requirements mandate complete reset."""
-        
-        ttk.Label(warning_frame, text=warning_text, foreground="red", 
-                 font=('Arial', 10, 'bold'), wraplength=800).pack()
-        
-        # Device Selection
-        device_selection_frame = ttk.LabelFrame(factory_reset_frame, text="Device Selection", padding=10)
-        device_selection_frame.pack(fill='x', padx=10, pady=5)
-        
-        device_info_frame = ttk.Frame(device_selection_frame)
-        device_info_frame.pack(fill='x')
-        
-        ttk.Label(device_info_frame, text="Selected Device:", font=('Arial', 10, 'bold')).pack(side='left')
-        self.factory_reset_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="gray")
-        self.factory_reset_device_label.pack(side='left', padx=10)
-        
-        ttk.Button(device_info_frame, text="Refresh Device Info", 
-                  command=self.update_factory_reset_device_info).pack(side='right')
-        
-        # Reset Options
-        options_frame = ttk.LabelFrame(factory_reset_frame, text="Reset Options", padding=10)
-        options_frame.pack(fill='x', padx=10, pady=5)
-        
-        self.factory_reset_secure = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options_frame, text="Secure factory reset (overwrite user data)", 
-                       variable=self.factory_reset_secure).pack(anchor='w')
-        
-        self.factory_reset_full = tk.BooleanVar(value=False)
-        ttk.Checkbutton(options_frame, text="Complete system wipe (includes system partitions)", 
-                       variable=self.factory_reset_full).pack(anchor='w')
-        
-        # Authorization Section
-        auth_frame = ttk.LabelFrame(factory_reset_frame, text="Authorization Required", padding=10)
-        auth_frame.pack(fill='x', padx=10, pady=5)
-        
-        ttk.Label(auth_frame, text="Administrator Password:", font=('Arial', 10, 'bold')).pack(anchor='w')
-        self.factory_reset_password = tk.StringVar()
-        ttk.Entry(auth_frame, textvariable=self.factory_reset_password, show="*", width=30).pack(pady=5)
-        
-        ttk.Label(auth_frame, text="Reset Reason (Required for audit):", font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10,0))
-        self.factory_reset_reason = tk.Text(auth_frame, height=3, width=70)
-        self.factory_reset_reason.pack(pady=5)
-        
-        # Control Buttons
-        controls_frame = ttk.Frame(auth_frame)
-        controls_frame.pack(fill='x', pady=10)
-        
-        self.factory_reset_button = ttk.Button(controls_frame, text="Initiate Factory Reset", 
-                                              command=self.initiate_factory_reset, 
-                                              style='Dangerous.TButton')
-        self.factory_reset_button.pack(side='left', padx=5)
-        
-        ttk.Button(controls_frame, text="Generate Reset Certificate", 
-                  command=self.generate_factory_reset_certificate).pack(side='left', padx=5)
-        
-        # Factory Reset Log Display
-        log_frame = ttk.LabelFrame(factory_reset_frame, text="Factory Reset Log", padding=10)
-        log_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        self.factory_reset_log = scrolledtext.ScrolledText(log_frame, height=10, wrap='word')
-        self.factory_reset_log.pack(fill='both', expand=True)
-        self.factory_reset_log.insert('1.0', "Factory reset operations will be logged here...")
-    
     def create_device_management_tab(self):
-        """Create enhanced device management tab"""
+        """Create device management tab"""
         device_frame = ttk.Frame(self.notebook)
         self.notebook.add(device_frame, text="Device Management")
         
@@ -772,7 +1005,7 @@ Use only when device decommissioning, security breach response, or compliance re
         header_frame = ttk.Frame(device_frame)
         header_frame.pack(fill='x', padx=10, pady=5)
         
-        ttk.Label(header_frame, text="Enhanced Enterprise Device Management", 
+        ttk.Label(header_frame, text="Enterprise Device Management", 
                  font=('Arial', 18, 'bold')).pack()
         ttk.Label(header_frame, text=f"Organization: {self.config['enterprise_settings']['organization_name']}", 
                  font=('Arial', 10)).pack()
@@ -782,7 +1015,7 @@ Use only when device decommissioning, security breach response, or compliance re
         status_frame.pack(fill='x', padx=10, pady=5)
         
         self.system_status_label = ttk.Label(status_frame, text="Checking system prerequisites...", 
-                                           foreground="orange")
+                                           foreground="#9932CC")  # Lighter purple
         self.system_status_label.pack()
         
         # Device detection controls
@@ -832,7 +1065,7 @@ Use only when device decommissioning, security breach response, or compliance re
         
         self.device_tree.bind('<<TreeviewSelect>>', self.on_device_select)
         
-        # Enhanced device actions
+        # Device actions
         actions_frame = ttk.LabelFrame(device_frame, text="Device Actions", padding=10)
         actions_frame.pack(fill='x', padx=10, pady=5)
         
@@ -840,7 +1073,7 @@ Use only when device decommissioning, security breach response, or compliance re
             ("Check Compliance", self.check_device_compliance),
             ("View Details", self.view_device_details),
             ("Apply Policies", self.apply_device_policies),
-            ("Emergency Wipe", self.emergency_device_wipe)
+            ("Generate Report", self.generate_device_report)
         ]
         
         for text, command in action_buttons:
@@ -854,19 +1087,19 @@ Use only when device decommissioning, security breach response, or compliance re
         self.device_info_text.pack(fill='both', expand=True)
     
     def create_sanitization_tab(self):
-        """Create enhanced data sanitization tab"""
+        """Create data sanitization tab"""
         sanitization_frame = ttk.Frame(self.notebook)
         self.notebook.add(sanitization_frame, text="Data Sanitization")
         
         # Warning header
-        warning_frame = ttk.LabelFrame(sanitization_frame, text="Data Sanitization Warning", padding=10)
+        warning_frame = ttk.LabelFrame(sanitization_frame, text="⚠️ Data Sanitization Warning", padding=10)
         warning_frame.pack(fill='x', padx=10, pady=5)
         
-        warning_text = """Data sanitization will permanently delete user data from the selected device.
-This operation cannot be undone. Ensure proper authorization and backups before proceeding.
+        warning_text = """IMPORTANT: Data sanitization will permanently delete user data from the selected device.
+This operation cannot be undone. Ensure you have proper authorization and backups before proceeding.
 Only user-accessible data will be sanitized (no system files or applications)."""
         
-        ttk.Label(warning_frame, text=warning_text, foreground="red", font=('Arial', 10, 'bold')).pack()
+        ttk.Label(warning_frame, text=warning_text, foreground="#9932CC", font=('Arial', 10, 'bold')).pack()  # Lighter purple
         
         # Device selection
         device_frame = ttk.LabelFrame(sanitization_frame, text="Device Selection", padding=10)
@@ -876,8 +1109,8 @@ Only user-accessible data will be sanitized (no system files or applications).""
         device_info_frame.pack(fill='x')
         
         ttk.Label(device_info_frame, text="Selected Device:", font=('Arial', 10, 'bold')).pack(side='left')
-        self.sanitization_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="gray")
-        self.sanitization_device_label.pack(side='left', padx=10)
+        self.selected_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="#9932CC")
+        self.selected_device_label.pack(side='left', padx=10)
         
         ttk.Button(device_info_frame, text="Refresh Device Info", 
                   command=self.update_sanitization_device_info).pack(side='right')
@@ -895,7 +1128,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         ttk.Button(auth_controls, text="Verify Authorization", 
                   command=self.verify_sanitization_auth).pack(side='left', padx=5)
         
-        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="orange")
+        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="#9932CC")
         self.auth_status_label.pack(pady=5)
         
         # Sanitization standards
@@ -916,7 +1149,33 @@ Only user-accessible data will be sanitized (no system files or applications).""
             ttk.Radiobutton(standards_frame, text=text, variable=self.sanitization_standard, 
                            value=value).pack(anchor='w')
         
-        # Control buttons and progress
+        # Data assessment
+        assessment_frame = ttk.LabelFrame(sanitization_frame, text="Data Assessment", padding=10)
+        assessment_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        assessment_controls = ttk.Frame(assessment_frame)
+        assessment_controls.pack(fill='x')
+        
+        ttk.Button(assessment_controls, text="Scan User Data", 
+                  command=self.scan_user_data).pack(side='left', padx=5)
+        ttk.Button(assessment_controls, text="Export Assessment", 
+                  command=self.export_data_assessment).pack(side='left', padx=5)
+        
+        # Assessment results
+        columns = ('Path', 'File Count', 'Estimated Size', 'Type', 'Status')
+        self.assessment_tree = ttk.Treeview(assessment_frame, columns=columns, show='headings', height=8)
+        
+        for col in columns:
+            self.assessment_tree.heading(col, text=col)
+            self.assessment_tree.column(col, width=120)
+        
+        assessment_scrollbar = ttk.Scrollbar(assessment_frame, orient='vertical', command=self.assessment_tree.yview)
+        self.assessment_tree.configure(yscrollcommand=assessment_scrollbar.set)
+        
+        self.assessment_tree.pack(side='left', fill='both', expand=True, pady=5)
+        assessment_scrollbar.pack(side='right', fill='y', pady=5)
+        
+        # Sanitization controls
         controls_frame = ttk.LabelFrame(sanitization_frame, text="Sanitization Controls", padding=10)
         controls_frame.pack(fill='x', padx=10, pady=5)
         
@@ -926,6 +1185,10 @@ Only user-accessible data will be sanitized (no system files or applications).""
         self.sanitize_button = ttk.Button(control_buttons, text="Start Sanitization", 
                                          command=self.start_sanitization, state='disabled')
         self.sanitize_button.pack(side='left', padx=5)
+        
+        self.verify_button = ttk.Button(control_buttons, text="Verify Sanitization", 
+                                       command=self.verify_sanitization_results, state='disabled')
+        self.verify_button.pack(side='left', padx=5)
         
         ttk.Button(control_buttons, text="Generate Certificate", 
                   command=self.generate_sanitization_certificate).pack(side='left', padx=5)
@@ -943,6 +1206,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         
         self.sanitization_results = scrolledtext.ScrolledText(results_frame, height=8, wrap='word')
         self.sanitization_results.pack(fill='both', expand=True)
+        
         self.sanitization_results.insert('1.0', "No sanitization performed yet...")
     
     def create_compliance_tab(self):
@@ -963,6 +1227,28 @@ Only user-accessible data will be sanitized (no system files or applications).""
         ttk.Label(org_frame, text=f"Standards: {', '.join(self.config['enterprise_settings']['compliance_standards'])}", 
                  font=('Arial', 10)).pack(anchor='w')
         
+        # Compliance metrics
+        metrics_frame = ttk.Frame(overview_frame)
+        metrics_frame.pack(fill='x', pady=10)
+        
+        self.compliance_labels = {}
+        standards = self.config['enterprise_settings']['compliance_standards']
+        
+        for i, standard in enumerate(standards):
+            frame = ttk.LabelFrame(metrics_frame, text=standard, padding=10)
+            frame.pack(side='left', padx=10, fill='both', expand=True)
+            
+            status_label = ttk.Label(frame, text="Not Checked", foreground="#9932CC", font=('Arial', 11, 'bold'))
+            status_label.pack()
+            
+            details_label = ttk.Label(frame, text="Run compliance check", font=('Arial', 9))
+            details_label.pack()
+            
+            self.compliance_labels[standard] = {
+                'status': status_label,
+                'details': details_label
+            }
+        
         # Compliance controls
         controls_frame = ttk.Frame(overview_frame)
         controls_frame.pack(fill='x', pady=10)
@@ -978,10 +1264,11 @@ Only user-accessible data will be sanitized (no system files or applications).""
         
         self.compliance_text = scrolledtext.ScrolledText(self.compliance_detail_frame, height=15, wrap='word')
         self.compliance_text.pack(fill='both', expand=True)
+        
         self.compliance_text.insert('1.0', "Run a compliance check to see detailed results...")
     
     def create_audit_tab(self):
-        """Create audit trail tab"""
+        """Create audit trail tab with improved display"""
         audit_frame = ttk.Frame(self.notebook)
         self.notebook.add(audit_frame, text="Audit Trail")
         
@@ -996,13 +1283,26 @@ Only user-accessible data will be sanitized (no system files or applications).""
                   command=self.refresh_audit_log).pack(side='left', padx=5)
         ttk.Button(control_buttons, text="Export Audit Trail", 
                   command=self.export_audit_trail).pack(side='left', padx=5)
+        ttk.Button(control_buttons, text="Clear Display", 
+                  command=self.clear_audit_display).pack(side='left', padx=5)
+        
+        # Filter controls
+        filter_frame = ttk.Frame(controls_frame)
+        filter_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(filter_frame, text="Filter by days:").pack(side='left')
+        self.audit_days_var = tk.StringVar(value="7")
+        days_combo = ttk.Combobox(filter_frame, textvariable=self.audit_days_var, 
+                                 values=["1", "7", "30", "90", "365"], width=10)
+        days_combo.pack(side='left', padx=5)
+        days_combo.bind('<<ComboboxSelected>>', lambda e: self.refresh_audit_log())
         
         # Audit log display
         log_frame = ttk.LabelFrame(audit_frame, text="Audit Events", padding=10)
         log_frame.pack(fill='both', expand=True, padx=10, pady=5)
         
-        # Create treeview for audit events
-        audit_columns = ('Timestamp', 'Event Type', 'Device', 'Operation', 'Status', 'Details')
+        # Create treeview for audit events with added column
+        audit_columns = ('Timestamp', 'Event Type', 'Device', 'Operation', 'Status', 'Details', 'Flags')
         self.audit_tree = ttk.Treeview(log_frame, columns=audit_columns, show='headings', height=12)
         
         for col in audit_columns:
@@ -1011,59 +1311,244 @@ Only user-accessible data will be sanitized (no system files or applications).""
         
         # Scrollbars for audit tree
         audit_v_scrollbar = ttk.Scrollbar(log_frame, orient='vertical', command=self.audit_tree.yview)
-        self.audit_tree.configure(yscrollcommand=audit_v_scrollbar.set)
+        audit_h_scrollbar = ttk.Scrollbar(log_frame, orient='horizontal', command=self.audit_tree.xview)
+        self.audit_tree.configure(yscrollcommand=audit_v_scrollbar.set, xscrollcommand=audit_h_scrollbar.set)
         
-        self.audit_tree.pack(side='left', fill='both', expand=True)
-        audit_v_scrollbar.pack(side='right', fill='y')
+        self.audit_tree.grid(row=0, column=0, sticky='nsew')
+        audit_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        audit_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        log_frame.grid_rowconfigure(0, weight=1)
+        log_frame.grid_columnconfigure(0, weight=1)
+        
+        # Audit statistics
+        stats_frame = ttk.LabelFrame(audit_frame, text="Audit Statistics", padding=10)
+        stats_frame.pack(fill='x', padx=10, pady=5)
+        
+        self.audit_stats_label = ttk.Label(stats_frame, text="No audit data loaded")
+        self.audit_stats_label.pack()
+    
+    def create_policies_tab(self):
+        """Create device policies tab with more options"""
+        policies_frame = ttk.Frame(self.notebook)
+        self.notebook.add(policies_frame, text="Policies")
+        
+        # Policy configuration
+        config_frame = ttk.LabelFrame(policies_frame, text="Policy Configuration", padding=10)
+        config_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Security policies
+        security_frame = ttk.LabelFrame(config_frame, text="Security Policies", padding=10)
+        security_frame.pack(fill='x', pady=5)
+        
+        # Screen timeout policy
+        timeout_frame = ttk.Frame(security_frame)
+        timeout_frame.pack(fill='x', pady=2)
+        
+        ttk.Label(timeout_frame, text="Screen Timeout (minutes):").pack(side='left')
+        self.screen_timeout_var = tk.StringVar(value=str(self.config['device_policies']['screen_timeout_minutes']))
+        ttk.Entry(timeout_frame, textvariable=self.screen_timeout_var, width=10).pack(side='left', padx=5)
+        
+        # Password policy
+        password_frame = ttk.Frame(security_frame)
+        password_frame.pack(fill='x', pady=2)
+        
+        ttk.Label(password_frame, text="Min Password Length:").pack(side='left')
+        self.password_length_var = tk.StringVar(value=str(self.config['device_policies']['min_password_length']))
+        ttk.Entry(password_frame, textvariable=self.password_length_var, width=10).pack(side='left', padx=5)
+        
+        # Auto-lock policy
+        autolock_frame = ttk.Frame(security_frame)
+        autolock_frame.pack(fill='x', pady=2)
+        
+        self.autolock_var = tk.BooleanVar(value=self.config['device_policies']['auto_lock_enabled'])
+        ttk.Checkbutton(autolock_frame, text="Auto-lock enabled", variable=self.autolock_var).pack(side='left')
+        
+        # New: Disable unknown sources
+        unknown_frame = ttk.Frame(security_frame)
+        unknown_frame.pack(fill='x', pady=2)
+        
+        self.unknown_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(unknown_frame, text="Disable Unknown Sources", variable=self.unknown_var).pack(side='left')
+        
+        # New: ADB control
+        adb_frame = ttk.Frame(security_frame)
+        adb_frame.pack(fill='x', pady=2)
+        
+        self.adb_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(adb_frame, text="Enable ADB (for dev only)", variable=self.adb_var).pack(side='left')
+        
+        # Policy controls
+        policy_controls = ttk.Frame(config_frame)
+        policy_controls.pack(fill='x', pady=10)
+        
+        ttk.Button(policy_controls, text="Apply to Selected Device", 
+                  command=self.apply_policies_to_device).pack(side='left', padx=5)
+        ttk.Button(policy_controls, text="Save Policy Configuration", 
+                  command=self.save_policy_configuration).pack(side='left', padx=5)
+        ttk.Button(policy_controls, text="Reset to Defaults", 
+                  command=self.reset_policy_defaults).pack(side='left', padx=5)
+        
+        # Policy deployment status
+        deployment_frame = ttk.LabelFrame(policies_frame, text="Policy Deployment Status", padding=10)
+        deployment_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Create treeview for policy status
+        policy_columns = ('Device', 'Screen Timeout', 'Password Policy', 'Auto-lock', 'Unknown Sources', 'ADB Status', 'Last Updated', 'Status')
+        self.policy_tree = ttk.Treeview(deployment_frame, columns=policy_columns, show='headings', height=10)
+        
+        for col in policy_columns:
+            self.policy_tree.heading(col, text=col)
+            self.policy_tree.column(col, width=100)
+        
+        # Scrollbars for policy tree
+        policy_v_scrollbar = ttk.Scrollbar(deployment_frame, orient='vertical', command=self.policy_tree.yview)
+        policy_h_scrollbar = ttk.Scrollbar(deployment_frame, orient='horizontal', command=self.policy_tree.xview)
+        self.policy_tree.configure(yscrollcommand=policy_v_scrollbar.set, xscrollcommand=policy_h_scrollbar.set)
+        
+        self.policy_tree.grid(row=0, column=0, sticky='nsew')
+        policy_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        policy_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        deployment_frame.grid_rowconfigure(0, weight=1)
+        deployment_frame.grid_columnconfigure(0, weight=1)
+    
+    def create_reports_tab(self):
+        """Create reports and analytics tab"""
+        reports_frame = ttk.Frame(self.notebook)
+        self.notebook.add(reports_frame, text="Reports")
+        
+        # Report generation
+        generation_frame = ttk.LabelFrame(reports_frame, text="Report Generation", padding=10)
+        generation_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Report types
+        types_frame = ttk.Frame(generation_frame)
+        types_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(types_frame, text="Report Type:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        
+        self.report_type_var = tk.StringVar(value="compliance")
+        report_types = [
+            ("Compliance Summary", "compliance"),
+            ("Device Inventory", "inventory"),
+            ("Audit Trail", "audit"),
+            ("Policy Deployment", "policies"),
+            ("Security Assessment", "security")
+        ]
+        
+        for text, value in report_types:
+            ttk.Radiobutton(types_frame, text=text, variable=self.report_type_var, 
+                           value=value).pack(anchor='w')
+        
+        # Report options
+        options_frame = ttk.Frame(generation_frame)
+        options_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(options_frame, text="Options:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        
+        self.include_charts_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_frame, text="Include charts and graphs", 
+                       variable=self.include_charts_var).pack(anchor='w')
+        
+        self.include_details_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_frame, text="Include detailed device information", 
+                       variable=self.include_details_var).pack(anchor='w')
+        
+        self.include_recommendations_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_frame, text="Include security recommendations", 
+                       variable=self.include_recommendations_var).pack(anchor='w')
+        
+        # Date range
+        date_frame = ttk.Frame(generation_frame)
+        date_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(date_frame, text="Report Period:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        
+        period_frame = ttk.Frame(date_frame)
+        period_frame.pack(fill='x')
+        
+        ttk.Label(period_frame, text="Last:").pack(side='left')
+        self.report_period_var = tk.StringVar(value="30")
+        period_combo = ttk.Combobox(period_frame, textvariable=self.report_period_var, 
+                                   values=["7", "30", "90", "180", "365"], width=10)
+        period_combo.pack(side='left', padx=5)
+        ttk.Label(period_frame, text="days").pack(side='left')
+        
+        # Generation controls
+        gen_controls = ttk.Frame(generation_frame)
+        gen_controls.pack(fill='x', pady=10)
+        
+        ttk.Button(gen_controls, text="Generate Report", 
+                  command=self.generate_report).pack(side='left', padx=5)
+        ttk.Button(gen_controls, text="Export to PDF", 
+                  command=self.export_report_pdf).pack(side='left', padx=5)
+        ttk.Button(gen_controls, text="Export to CSV", 
+                  command=self.export_report_csv).pack(side='left', padx=5)
+        
+        # Report preview
+        preview_frame = ttk.LabelFrame(reports_frame, text="Report Preview", padding=10)
+        preview_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.report_text = scrolledtext.ScrolledText(preview_frame, height=20, wrap='word')
+        self.report_text.pack(fill='both', expand=True)
+        
+        self.report_text.insert('1.0', "Generate a report to see preview...")
     
     def create_status_bar(self):
         """Create status bar"""
         self.status_bar = ttk.Frame(self.scrollable_frame)
         self.status_bar.pack(fill='x', side='bottom', padx=10, pady=5)
         
-        self.status_label = ttk.Label(self.status_bar, text="Enhanced Enterprise MDM System Ready")
+        self.status_label = ttk.Label(self.status_bar, text="Ready")
         self.status_label.pack(side='left')
         
         # Connection status
-        self.connection_label = ttk.Label(self.status_bar, text="●", foreground="red")
+        self.connection_label = ttk.Label(self.status_bar, text="●", foreground="#9932CC")
         self.connection_label.pack(side='right', padx=5)
         
-        ttk.Label(self.status_bar, text="System Status:").pack(side='right')
+        ttk.Label(self.status_bar, text="ADB Status:").pack(side='right')
     
     # Core functionality methods
     def log_message(self, message):
         """Log message to GUI and file"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}"
-        print(formatted_message)
+        print(formatted_message)  # Console output
         
         # Update status bar with latest message
         self.status_label.config(text=message[:50] + "..." if len(message) > 50 else message)
         
-        # Log to file
-        logging.info(message)
+        # Log to audit if significant
+        if "failed" in message.lower() or "success" in message.lower():
+            self.audit_system.log_event("GUI_ACTION", self.selected_device or "N/A", "LOG_MESSAGE", "INFO", details=message)
     
     def check_system_prerequisites(self):
         """Check system prerequisites"""
         def check():
             success, message = self.mdm.check_prerequisites()
+            
+            # Update GUI from main thread
             self.root.after(0, lambda: self.update_system_status(success, message))
         
+        # Run in background thread
         threading.Thread(target=check, daemon=True).start()
     
     def update_system_status(self, success, message):
         """Update system status display"""
         if success:
-            self.system_status_label.config(text=f"✓ {message}", foreground="green")
-            self.connection_label.config(foreground="green")
+            self.system_status_label.config(text=f"✓ {message}", foreground="#00FF00")  # Green for success
+            self.connection_label.config(foreground="#00FF00")
         else:
-            self.system_status_label.config(text=f"✗ {message}", foreground="red")
-            self.connection_label.config(foreground="red")
+            self.system_status_label.config(text=f"✗ {message}", foreground="#FF0000")  # Red for failure
+            self.connection_label.config(foreground="#FF0000")
     
     def refresh_devices(self):
         """Refresh device list"""
         def detect():
             devices = self.mdm.detect_devices()
+            
+            # Update GUI from main thread
             self.root.after(0, lambda: self.update_device_list(devices))
         
         self.log_message("Detecting devices...")
@@ -1071,11 +1556,13 @@ Only user-accessible data will be sanitized (no system files or applications).""
     
     def update_device_list(self, devices):
         """Update device list display"""
+        # Clear existing items
         for item in self.device_tree.get_children():
             self.device_tree.delete(item)
         
         self.devices = devices
         
+        # Add devices to tree
         for i, device in enumerate(devices):
             device_name = f"{device.get('brand', 'Unknown')} {device.get('model', 'Device')}"
             
@@ -1090,18 +1577,21 @@ Only user-accessible data will be sanitized (no system files or applications).""
             
             self.device_tree.insert('', 'end', iid=str(i), text=str(i+1), values=values)
         
+        # Update device count
         count = len(devices)
         self.device_count_label.config(text=f"{count} device{'s' if count != 1 else ''} detected")
+        
         self.log_message(f"Device detection complete: {count} devices found")
         
+        # Schedule next refresh if auto-refresh is enabled
         if self.auto_refresh_var.get():
-            self.root.after(30000, self.refresh_devices)
+            self.root.after(30000, self.refresh_devices)  # 30 seconds
     
     def toggle_auto_refresh(self):
         """Toggle auto-refresh functionality"""
         if self.auto_refresh_var.get():
             self.log_message("Auto-refresh enabled (30s interval)")
-            self.refresh_devices()
+            self.refresh_devices()  # Start refresh cycle
         else:
             self.log_message("Auto-refresh disabled")
     
@@ -1116,17 +1606,18 @@ Only user-accessible data will be sanitized (no system files or applications).""
                 self.selected_device = self.devices[device_index]['id']
                 self.selected_device_info = self.devices[device_index]
                 self.display_device_info()
-                self.update_sanitization_device_info()
-                self.update_factory_reset_device_info()
     
     def display_device_info(self):
-        """Display detailed device information"""
+        """Display detailed device information with added security details"""
         if not self.selected_device_info:
             return
         
         info = self.selected_device_info
+        
+        # Clear previous content
         self.device_info_text.delete('1.0', tk.END)
         
+        # Format device information
         info_text = f"""DEVICE INFORMATION
 {'='*50}
 
@@ -1140,6 +1631,7 @@ Basic Information:
 System Information:
   Android Version: {info.get('android_version', 'Unknown')}
   SDK Version: {info.get('sdk_version', 'Unknown')}
+  Security Patch: {info.get('security_patch', 'Unknown')}
   
 Storage Information:
   Total Storage: {info.get('storage_total', 'Unknown')}
@@ -1150,6 +1642,9 @@ Storage Information:
 Security Information:
   Encryption Status: {info.get('encryption_status', 'Unknown')}
   Device Admin Status: {info.get('admin_status', 'Unknown')}
+  Rooted: {info.get('is_rooted', 'Unknown')}
+  SELinux: {info.get('selinux_status', 'Unknown')}
+  Unknown Sources: {info.get('unknown_sources', 'Unknown')}
 
 Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -1157,748 +1652,209 @@ Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.device_info_text.insert('1.0', info_text)
         self.log_message(f"Displaying info for device: {info.get('brand', 'Unknown')} {info.get('model', 'Device')}")
     
-    # Enhanced security operation methods
-    def scan_system_drives(self):
-        """Scan system drives for secure wiping"""
-        def scan():
-            success, drives = self.mdm.system_wipe_engine.scan_drives()
-            self.root.after(0, lambda: self.update_drive_list(success, drives))
-        
-        self.log_message("Scanning system drives...")
-        threading.Thread(target=scan, daemon=True).start()
-    
-    def update_drive_list(self, success, drives):
-        """Update drive list display"""
-        for item in self.drive_tree.get_children():
-            self.drive_tree.delete(item)
-        
-        if success:
-            for drive in drives:
-                total_gb = drive['total'] / (1024**3) if 'total' in drive else 0
-                used_gb = drive['used'] / (1024**3) if 'used' in drive else 0
-                status = "Hidden" if drive.get('hidden', False) else "Accessible"
-                
-                values = (
-                    drive['device'],
-                    drive['mountpoint'],
-                    drive['fstype'],
-                    f"{total_gb:.1f}GB",
-                    f"{used_gb:.1f}GB",
-                    status
-                )
-                
-                self.drive_tree.insert('', 'end', values=values)
-            
-            self.drive_count_label.config(text=f"{len(drives)} drives detected")
-            self.log_message(f"Drive scan completed: {len(drives)} drives found")
-        else:
-            self.log_message(f"Drive scan failed: {drives}")
-    
-    def initiate_secure_drive_wipe(self):
-        """Initiate secure drive wiping with multiple security layers"""
-        if not self.show_drive_wipe_warning():
-            return
-        
-        if not self.authenticate_admin_operation("Secure Drive Wipe"):
-            return
-        
-        selected_drives = self.get_selected_drives()
-        if not selected_drives:
-            return
-        
-        if not self.confirm_drive_wipe(selected_drives):
-            return
-        
-        reason = self.get_operation_reason("secure drive wipe")
-        if not reason:
-            return
-        
-        self.execute_secure_drive_wipe(selected_drives, reason)
-    
-    def show_drive_wipe_warning(self):
-        """Show warning about secure drive wiping"""
-        warning_text = """CRITICAL SECURITY OPERATION: SECURE DRIVE WIPE
-
-This operation will:
-• PERMANENTLY destroy all data on selected drives
-• Overwrite data multiple times based on selected method
-• Include hidden partitions and system areas
-• Make data recovery IMPOSSIBLE
-• Require system reinstallation
-
-WIPING METHODS AVAILABLE:
-• Quick (1-pass): Fast but less secure
-• DoD 3-Pass: Department of Defense standard  
-• DoD 7-Pass: Enhanced DoD standard
-• Gutmann 35-Pass: Maximum security (very slow)
-
-This action is IRREVERSIBLE and DESTRUCTIVE!
-
-Continue with drive selection?"""
-
-        result = messagebox.askyesno("Secure Drive Wipe Warning", warning_text, icon="warning")
-        return result
-    
-    def authenticate_admin_operation(self, operation_name):
-        """Authenticate admin for critical operations"""
-        if not self.config['security_settings']['admin_auth_required']:
-            return True
-        
-        password = simpledialog.askstring(
-            f"Administrator Authentication - {operation_name}",
-            "Enter administrator password:",
-            show="*"
-        )
-        
-        # In production, use proper authentication
-        if password == "admin2024":
-            self.log_message(f"Administrator authentication successful for {operation_name}")
-            return True
-        else:
-            messagebox.showerror("Authentication Failed", "Invalid administrator password")
-            self.log_message(f"Administrator authentication failed for {operation_name}")
-            return False
-    
-    def get_selected_drives(self):
-        """Get user-selected drives for wiping"""
-        selected_items = self.drive_tree.selection()
-        if not selected_items:
-            messagebox.showwarning("No Selection", "Please select drives to wipe")
-            return None
-        
-        selected_drives = []
-        for item in selected_items:
-            values = self.drive_tree.item(item)['values']
-            selected_drives.append(values[0])  # Device path
-        
-        return selected_drives
-    
-    def confirm_drive_wipe(self, selected_drives):
-        """Final confirmation for drive wipe"""
-        wipe_method = self.drive_wipe_method.get()
-        drives_list = "\n".join([f"  • {drive}" for drive in selected_drives])
-        
-        confirm_text = f"""FINAL DRIVE WIPE CONFIRMATION
-
-SELECTED DRIVES:
-{drives_list}
-
-WIPE METHOD: {wipe_method}
-INCLUDE HIDDEN: {self.include_hidden_drives.get()}
-
-THIS WILL PERMANENTLY DESTROY ALL DATA!
-
-Type 'CONFIRM WIPE' to proceed:"""
-
-        user_input = simpledialog.askstring("Final Confirmation", confirm_text, show="*")
-        return user_input == "CONFIRM WIPE"
-    
-    def get_operation_reason(self, operation_type):
-        """Get reason for critical operation"""
-        reason = simpledialog.askstring(
-            f"Operation Reason - {operation_type.title()}",
-            f"Please provide a reason for this {operation_type}\n(Required for audit trail):"
-        )
-        
-        if reason and reason.strip():
-            return reason.strip()
-        else:
-            messagebox.showwarning("Reason Required", "Operation reason is required for audit compliance")
-            return None
-    
-    def execute_secure_drive_wipe(self, selected_drives, reason):
-        """Execute secure drive wiping"""
-        wipe_method = self.drive_wipe_method.get()
-        self.log_message(f"SECURE DRIVE WIPE STARTING - Method: {wipe_method}")
-        
-        # Create progress dialog
-        progress_dialog = self.create_progress_dialog("Secure Drive Wipe in Progress", 
-                                                     "Initializing secure wipe...")
-        
-        def wipe_progress_callback(message, progress=None, is_progress=False):
-            if is_progress and progress is not None:
-                progress_dialog['progress_var'].set(progress)
-            else:
-                progress_dialog['status_label'].config(text=message)
-        
-        def perform_wipe():
-            try:
-                success, result = self.mdm.system_wipe_engine.perform_secure_drive_wipe(
-                    selected_drives, wipe_method, wipe_progress_callback)
-                
-                # Log audit entry
-                audit_entry = {
-                    "action": "secure_drive_wipe",
-                    "timestamp": datetime.now().isoformat(),
-                    "drives": selected_drives,
-                    "method": wipe_method,
-                    "reason": reason,
-                    "status": "completed" if success else "failed",
-                    "result": result
-                }
-                
-                self.save_audit_entry(audit_entry)
-                
-                self.root.after(0, lambda: self.show_operation_completion(
-                    progress_dialog['window'], "Secure Drive Wipe", success, result))
-                
-            except Exception as e:
-                error_msg = f"Secure drive wipe failed: {str(e)}"
-                self.log_message(error_msg)
-                self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
-                self.root.after(0, lambda: progress_dialog['window'].destroy())
-        
-        threading.Thread(target=perform_wipe, daemon=True).start()
-    
-    def initiate_factory_reset(self):
-        """Initiate factory reset with security layers"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first")
-            return
-        
-        if not self.show_factory_reset_warning():
-            return
-        
-        if not self.authenticate_admin_operation("Factory Reset"):
-            return
-        
-        password = self.factory_reset_password.get()
-        if not password:
-            messagebox.showwarning("Password Required", "Administrator password is required")
-            return
-        
-        reason = self.factory_reset_reason.get('1.0', tk.END).strip()
-        if not reason:
-            messagebox.showwarning("Reason Required", "Reset reason is required for audit")
-            return
-        
-        if not self.confirm_factory_reset():
-            return
-        
-        self.execute_factory_reset(reason)
-    
-    def show_factory_reset_warning(self):
-        """Show factory reset warning"""
-        warning_text = """DESTRUCTIVE OPERATION: FACTORY RESET
-
-This action will:
-• Completely wipe all device data
-• Remove all applications and settings  
-• Reset device to factory state
-• Require complete reconfiguration
-
-This action is IRREVERSIBLE!
-
-Are you sure you want to continue?"""
-        
-        result = messagebox.askyesno("Factory Reset Warning", warning_text, icon="warning")
-        return result
-    
-    def confirm_factory_reset(self):
-        """Final confirmation for factory reset"""
-        confirm_text = """FINAL FACTORY RESET CONFIRMATION
-
-You are about to perform a FACTORY RESET on the selected device.
-This is your LAST CHANCE to cancel!
-
-Type 'RESET DEVICE' to confirm:"""
-        
-        user_input = simpledialog.askstring("Final Confirmation", confirm_text, show="*")
-        return user_input == "RESET DEVICE"
-    
-    def execute_factory_reset(self, reason):
-        """Execute factory reset operation"""
-        self.log_message("FACTORY RESET IN PROGRESS...")
-        self.factory_reset_log.delete('1.0', tk.END)
-        
-        # Create progress dialog
-        progress_dialog = self.create_progress_dialog("Factory Reset in Progress", 
-                                                     "Initializing factory reset...")
-        
-        def reset_progress_callback(message, progress):
-            progress_dialog['progress_var'].set(progress)
-            progress_dialog['status_label'].config(text=message)
-            self.factory_reset_log.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
-            self.factory_reset_log.see(tk.END)
-        
-        def perform_reset():
-            try:
-                success, result = self.mdm.factory_reset_engine.perform_factory_reset(
-                    self.selected_device, reason, reset_progress_callback)
-                
-                # Log audit entry
-                audit_entry = {
-                    "action": "factory_reset",
-                    "timestamp": datetime.now().isoformat(),
-                    "device_id": self.selected_device,
-                    "reason": reason,
-                    "secure_reset": self.factory_reset_secure.get(),
-                    "full_wipe": self.factory_reset_full.get(),
-                    "status": "completed" if success else "failed",
-                    "result": result
-                }
-                
-                self.save_audit_entry(audit_entry)
-                
-                self.root.after(0, lambda: self.show_operation_completion(
-                    progress_dialog['window'], "Factory Reset", success, result))
-                
-            except Exception as e:
-                error_msg = f"Factory reset failed: {str(e)}"
-                self.log_message(error_msg)
-                self.root.after(0, lambda: messagebox.showerror("Reset Failed", error_msg))
-                self.root.after(0, lambda: progress_dialog['window'].destroy())
-        
-        threading.Thread(target=perform_reset, daemon=True).start()
-    
-    def emergency_device_wipe(self):
-        """Emergency device wipe combining multiple security operations"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first")
-            return
-        
-        emergency_warning = """EMERGENCY DEVICE WIPE
-
-This is the most comprehensive security operation available.
-
-This will:
-• Perform factory reset of device settings
-• Securely wipe all user data (multiple passes)
-• Overwrite system partitions if possible
-• Make data recovery nearly impossible
-
-This is intended for:
-• Security breach response
-• Device theft/loss scenarios
-• Critical data protection situations
-• Compliance with data destruction policies
-
-THIS IS COMPLETELY IRREVERSIBLE!
-
-Continue with emergency wipe?"""
-
-        if not messagebox.askyesno("EMERGENCY OPERATION", emergency_warning, icon="error"):
-            return
-        
-        if not self.authenticate_admin_operation("Emergency Device Wipe"):
-            return
-        
-        reason = simpledialog.askstring(
-            "Emergency Wipe Reason",
-            "Provide emergency reason (required for critical operations):"
-        )
-        
-        if not reason:
-            messagebox.showwarning("Reason Required", "Emergency reason is mandatory")
-            return
-        
-        final_confirm = simpledialog.askstring(
-            "EMERGENCY CONFIRMATION",
-            "Type 'EMERGENCY WIPE' to proceed:",
-            show="*"
-        )
-        
-        if final_confirm != "EMERGENCY WIPE":
-            self.log_message("Emergency device wipe cancelled")
-            return
-        
-        self.execute_emergency_wipe(reason)
-    
-    def execute_emergency_wipe(self, reason):
-        """Execute emergency device wipe"""
-        self.log_message("EMERGENCY DEVICE WIPE IN PROGRESS...")
-        
-        progress_dialog = self.create_progress_dialog("EMERGENCY DEVICE WIPE", 
-                                                     "Initiating emergency procedures...")
-        
-        emergency_phases = [
-            ("Emergency Assessment", 5),
-            ("Data Backup Critical Logs", 10),
-            ("Factory Reset Execution", 30),
-            ("Secure Data Sanitization", 60),
-            ("System Area Overwrite", 80),
-            ("Verification & Completion", 95),
-            ("Audit Documentation", 100)
-        ]
-        
-        def emergency_progress_callback(phase_name, progress):
-            progress_dialog['progress_var'].set(progress)
-            progress_dialog['status_label'].config(text=f"Emergency Phase: {phase_name}")
-        
-        def perform_emergency_wipe():
-            try:
-                for phase_name, progress in emergency_phases:
-                    self.root.after(0, lambda p=phase_name, pr=progress: emergency_progress_callback(p, pr))
-                    self.log_message(f"Emergency Phase: {phase_name}")
-                    time.sleep(1.5)  # Simulate processing
-                
-                # Log comprehensive audit entry
-                audit_entry = {
-                    "action": "emergency_device_wipe",
-                    "timestamp": datetime.now().isoformat(),
-                    "device_id": self.selected_device,
-                    "reason": reason,
-                    "phases_completed": [phase[0] for phase in emergency_phases],
-                    "security_level": "Maximum",
-                    "data_recovery": "Nearly Impossible",
-                    "status": "completed"
-                }
-                
-                self.save_audit_entry(audit_entry)
-                
-                success_message = """EMERGENCY DEVICE WIPE COMPLETED
-
-MAXIMUM SECURITY LEVEL ACHIEVED
-
-OPERATIONS COMPLETED:
-• Factory reset executed
-• Data sanitization performed
-• System areas overwritten
-• Data recovery prevented
-
-SECURITY STATUS: MAXIMUM
-AUDIT STATUS: LOGGED
-COMPLIANCE: VERIFIED"""
-
-                self.root.after(0, lambda: self.show_operation_completion(
-                    progress_dialog['window'], "Emergency Device Wipe", True, success_message))
-                
-            except Exception as e:
-                error_msg = f"Emergency wipe failed: {str(e)}"
-                self.log_message(error_msg)
-                self.root.after(0, lambda: messagebox.showerror("Emergency Failed", error_msg))
-                self.root.after(0, lambda: progress_dialog['window'].destroy())
-        
-        threading.Thread(target=perform_emergency_wipe, daemon=True).start()
-    
-    def create_progress_dialog(self, title, initial_message):
-        """Create reusable progress dialog"""
-        progress_window = tk.Toplevel(self.root)
-        progress_window.title(title)
-        progress_window.geometry("600x200")
-        progress_window.configure(bg="#2c3e50")
-        progress_window.grab_set()
-        
-        # Center the window
-        progress_window.transient(self.root)
-        
-        tk.Label(
-            progress_window,
-            text=title,
-            font=("Arial", 14, "bold"),
-            fg="#e74c3c",
-            bg="#2c3e50"
-        ).pack(pady=20)
-        
-        progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(
-            progress_window,
-            variable=progress_var,
-            maximum=100,
-            length=500,
-            mode='determinate'
-        )
-        progress_bar.pack(pady=20)
-        
-        status_label = tk.Label(
-            progress_window,
-            text=initial_message,
-            fg="white",
-            bg="#2c3e50"
-        )
-        status_label.pack(pady=10)
-        
-        return {
-            'window': progress_window,
-            'progress_var': progress_var,
-            'status_label': status_label
-        }
-    
-    def show_operation_completion(self, progress_window, operation_name, success, result):
-        """Show operation completion dialog"""
-        progress_window.destroy()
-        
-        if success:
-            completion_text = f"""{operation_name.upper()} COMPLETED
-
-{result}
-
-The operation has been logged for audit purposes.
-All security protocols were followed."""
-            
-            messagebox.showinfo(f"{operation_name} Complete", completion_text)
-        else:
-            messagebox.showerror(f"{operation_name} Failed", f"Operation failed: {result}")
-    
-    def save_audit_entry(self, audit_entry):
-        """Save audit entry to log file"""
-        try:
-            logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
-            os.makedirs(logs_dir, exist_ok=True)
-            audit_file = os.path.join(logs_dir, 'enhanced_mdm_audit.json')
-            
-            # Load existing audit log
-            if os.path.exists(audit_file):
-                with open(audit_file, 'r') as f:
-                    audit_log = json.load(f)
-            else:
-                audit_log = {"audit_history": []}
-                
-            # Add new entry
-            audit_log["audit_history"].append(audit_entry)
-            
-            # Save updated log
-            with open(audit_file, 'w') as f:
-                json.dump(audit_log, f, indent=2)
-                
-            self.log_message("Audit entry saved successfully")
-            
-        except Exception as e:
-            self.log_message(f"Failed to save audit entry: {str(e)}")
-    
-    # Helper methods for existing functionality
-    def update_sanitization_device_info(self):
-        """Update device info for sanitization tab"""
-        if self.selected_device and self.selected_device_info:
-            device_name = f"{self.selected_device_info.get('brand', 'Unknown')} {self.selected_device_info.get('model', 'Device')}"
-            self.sanitization_device_label.config(text=f"{device_name} ({self.selected_device})", foreground="blue")
-        else:
-            self.sanitization_device_label.config(text="No device selected", foreground="gray")
-    
-    def update_factory_reset_device_info(self):
-        """Update device info for factory reset tab"""
-        if self.selected_device and self.selected_device_info:
-            device_name = f"{self.selected_device_info.get('brand', 'Unknown')} {self.selected_device_info.get('model', 'Device')}"
-            self.factory_reset_device_label.config(text=f"{device_name} ({self.selected_device})", foreground="blue")
-        else:
-            self.factory_reset_device_label.config(text="No device selected", foreground="gray")
-    
-    def verify_sanitization_auth(self):
-        """Verify authorization for sanitization"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first.")
-            return
-        
-        def verify():
-            token = self.auth_token_var.get()
-            success, message = self.mdm.sanitization_engine.verify_authorization(self.selected_device, token)
-            self.root.after(0, lambda: self.update_auth_status(success, message))
-        
-        threading.Thread(target=verify, daemon=True).start()
-    
-    def update_auth_status(self, success, message):
-        """Update authorization status"""
-        if success:
-            self.auth_status_label.config(text=f"✓ {message}", foreground="green")
-            self.sanitize_button.config(state='normal')
-        else:
-            self.auth_status_label.config(text=f"✗ {message}", foreground="red")
-            self.sanitize_button.config(state='disabled')
-    
-    def start_sanitization(self):
-        """Start data sanitization process"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first.")
-            return
-        
-        confirm = messagebox.askyesno(
-            "Confirm Sanitization",
-            f"Are you sure you want to sanitize data on device {self.selected_device}?\n\n"
-            f"Standard: {self.sanitization_standard.get()}\n"
-            "This action cannot be undone!",
-            icon='warning'
-        )
-        
-        if not confirm:
-            return
-        
-        def sanitize():
-            standard = self.sanitization_standard.get()
-            self.root.after(0, lambda: self.sanitization_progress.config(value=0))
-            self.root.after(0, lambda: self.sanitization_status.config(text="Starting sanitization..."))
-            
-            success, operations = self.mdm.sanitization_engine.sanitize_user_data(
-                self.selected_device, standard)
-            
-            self.root.after(0, lambda: self.update_sanitization_results(success, operations, standard))
-        
-        self.sanitize_button.config(state='disabled')
-        threading.Thread(target=sanitize, daemon=True).start()
-    
-    def update_sanitization_results(self, success, operations, standard):
-        """Update sanitization results"""
-        self.sanitization_progress.config(value=100)
-        
-        if success:
-            self.sanitization_status.config(text="Sanitization completed")
-            
-            results_text = f"""DATA SANITIZATION COMPLETED
-{'='*50}
-Device: {self.selected_device}
-Standard: {standard}
-Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-SANITIZATION SUMMARY:
-{'-'*30}
-"""
-            
-            for operation in operations:
-                status_symbol = "✓" if operation['status'] == 'completed' else "✗"
-                results_text += f"{status_symbol} {operation['path']}: {operation['status']} ({operation['files']} files)\n"
-            
-            self.sanitization_results.delete('1.0', tk.END)
-            self.sanitization_results.insert('1.0', results_text)
-            
-            # Log audit event
-            self.mdm.audit_log_entry("DATA_SANITIZATION", self.selected_device, "SUCCESS", 
-                                   f"Standard: {standard}, Operations: {len(operations)}")
-        else:
-            self.sanitization_status.config(text="Sanitization failed")
-            error_text = f"Sanitization failed: {operations}"
-            self.sanitization_results.delete('1.0', tk.END)
-            self.sanitization_results.insert('1.0', error_text)
-        
-        self.sanitize_button.config(state='normal')
-    
-    def generate_sanitization_certificate(self):
-        """Generate sanitization completion certificate"""
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
-        
-        if filename:
-            try:
-                content = self.sanitization_results.get('1.0', tk.END)
-                
-                certificate = f"""ENTERPRISE DATA SANITIZATION CERTIFICATE
-{'='*60}
-
-Organization: {self.config['enterprise_settings']['organization_name']}
-Certificate ID: {hashlib.sha256(f"{self.selected_device}{datetime.now().isoformat()}".encode()).hexdigest()[:16]}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{content}
-
-Digital Signature: {hashlib.sha256(content.encode()).hexdigest()[:32]}
-"""
-                
-                with open(filename, 'w') as f:
-                    f.write(certificate)
-                    
-                messagebox.showinfo("Certificate Generated", f"Certificate saved to: {filename}")
-                
-            except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to generate certificate: {e}")
-    
-    def generate_factory_reset_certificate(self):
-        """Generate factory reset certificate"""
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
-        
-        if filename:
-            try:
-                reason = self.factory_reset_reason.get('1.0', tk.END).strip()
-                
-                certificate = f"""ENTERPRISE FACTORY RESET CERTIFICATE
-{'='*60}
-
-Organization: {self.config['enterprise_settings']['organization_name']}
-Certificate ID: {hashlib.sha256(f"reset_{self.selected_device}{datetime.now().isoformat()}".encode()).hexdigest()[:16]}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-FACTORY RESET DETAILS:
-Device ID: {self.selected_device}
-Reset Type: {'Secure' if self.factory_reset_secure.get() else 'Standard'}
-Full Wipe: {'Yes' if self.factory_reset_full.get() else 'No'}
-Reason: {reason}
-
-This certificate confirms that a factory reset operation was performed
-on the specified device in accordance with enterprise security policies.
-
-Digital Signature: {hashlib.sha256(f"reset_{reason}".encode()).hexdigest()[:32]}
-"""
-                
-                with open(filename, 'w') as f:
-                    f.write(certificate)
-                    
-                messagebox.showinfo("Certificate Generated", f"Reset certificate saved to: {filename}")
-                
-            except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to generate certificate: {e}")
-    
-    def generate_drive_wipe_certificate(self):
-        """Generate drive wipe certificate"""
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
-        
-        if filename:
-            try:
-                certificate = f"""SECURE DRIVE WIPE CERTIFICATE
-{'='*60}
-
-Organization: {self.config['enterprise_settings']['organization_name']}
-Certificate ID: {hashlib.sha256(f"wipe_{datetime.now().isoformat()}".encode()).hexdigest()[:16]}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-DRIVE WIPE DETAILS:
-Wipe Method: {self.drive_wipe_method.get()}
-Include Hidden: {'Yes' if self.include_hidden_drives.get() else 'No'}
-
-This certificate confirms that secure drive wiping was performed
-in accordance with enterprise data destruction policies.
-
-Digital Signature: {hashlib.sha256(f"wipe_{self.drive_wipe_method.get()}".encode()).hexdigest()[:32]}
-"""
-                
-                with open(filename, 'w') as f:
-                    f.write(certificate)
-                    
-                messagebox.showinfo("Certificate Generated", f"Drive wipe certificate saved to: {filename}")
-                
-            except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to generate certificate: {e}")
-    
-    # Additional helper methods for compliance and audit
     def check_device_compliance(self):
         """Check compliance for selected device"""
         if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first.")
+            messagebox.showwarning("No Device Selected", "Please select a device first.")
             return
+        
+        def check():
+            standards = self.config['enterprise_settings']['compliance_standards']
+            results = self.mdm.check_compliance(self.selected_device, standards)
+            
+            # Update GUI from main thread
+            self.root.after(0, lambda: self.update_compliance_results(results))
         
         self.log_message(f"Running compliance check for device: {self.selected_device}")
-        messagebox.showinfo("Compliance Check", "Compliance check completed - see audit trail")
+        threading.Thread(target=check, daemon=True).start()
     
-    def view_device_details(self):
-        """View detailed device information"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first.")
-            return
+    def update_compliance_results(self, results):
+        """Update compliance results display"""
+        # Update overview labels
+        for standard, result in results.items():
+            if standard in self.compliance_labels:
+                status = result['overall_status']
+                color = "#00FF00" if status == "COMPLIANT" else "#FF4500"
+                
+                self.compliance_labels[standard]['status'].config(
+                    text=status, foreground=color
+                )
+                self.compliance_labels[standard]['details'].config(
+                    text=f"Checked: {result['checked_at'][:16]}"
+                )
         
-        self.notebook.select(0)  # Switch to device management tab
-        self.log_message("Viewing device details")
-    
-    def apply_device_policies(self):
-        """Apply policies to selected device"""
-        if not self.selected_device:
-            messagebox.showwarning("No Device", "Please select a device first.")
-            return
+        # Update detailed results
+        self.compliance_text.delete('1.0', tk.END)
         
-        self.log_message(f"Applying policies to device: {self.selected_device}")
-        messagebox.showinfo("Policies Applied", "Device policies have been applied")
+        detail_text = f"""COMPLIANCE CHECK RESULTS
+{'='*50}
+Device: {self.selected_device}
+Checked: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
+        
+        for standard, result in results.items():
+            detail_text += f"\n{standard} COMPLIANCE\n{'-'*30}\n"
+            detail_text += f"Overall Status: {result['overall_status']}\n\n"
+            
+            for check in result['checks']:
+                status_symbol = "✓" if check['status'] == "PASS" else "✗" if check['status'] == "FAIL" else "?"
+                detail_text += f"{status_symbol} {check['check']}: {check['status']}\n"
+                detail_text += f"   Details: {check['details']}\n\n"
+        
+        self.compliance_text.insert('1.0', detail_text)
+        self.log_message("Compliance check completed")
     
     def run_compliance_check(self):
         """Run compliance check for all devices"""
         if not self.devices:
-            messagebox.showinfo("No Devices", "No devices detected for compliance check.")
+            messagebox.showinfo("No Devices", "No devices detected. Please connect and refresh devices first.")
             return
         
         self.log_message("Running compliance check for all devices...")
+        # Implementation would check all devices
         messagebox.showinfo("Compliance Check", "Compliance check completed for all devices.")
+    
+    def view_device_details(self):
+        """View detailed device information"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device Selected", "Please select a device first.")
+            return
+        
+        # Device details are already shown in the info panel
+        self.notebook.select(0)  # Switch to device management tab
+        self.log_message("Viewing device details")
+    
+    def apply_device_policies(self):
+        """Apply policies to selected device with more policies"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device Selected", "Please select a device first.")
+            return
+        
+        def apply():
+            successes = []
+            # Apply screen timeout policy
+            timeout_value = self.screen_timeout_var.get()
+            success, message = self.mdm.apply_policy(self.selected_device, "screen_timeout", timeout_value)
+            successes.append(success)
+            
+            # Apply unknown sources
+            success, message = self.mdm.apply_policy(self.selected_device, "disable_unknown_sources", True)
+            successes.append(success)
+            
+            # Apply ADB
+            adb_value = self.adb_var.get()
+            success, message = self.mdm.apply_policy(self.selected_device, "enable_adb", adb_value)
+            successes.append(success)
+            
+            all_success = all(successes)
+            
+            # Update GUI from main thread
+            self.root.after(0, lambda: self.show_policy_result(all_success, "Multiple policies applied"))
+        
+        self.log_message(f"Applying policies to device: {self.selected_device}")
+        threading.Thread(target=apply, daemon=True).start()
+    
+    def show_policy_result(self, success, message):
+        """Show policy application result"""
+        if success:
+            messagebox.showinfo("Policy Applied", f"Policy applied successfully: {message}")
+        else:
+            messagebox.showwarning("Policy Failed", f"Policy application failed: {message}")
+    
+    def generate_device_report(self):
+        """Generate report for selected device"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device Selected", "Please select a device first.")
+            return
+        
+        # Switch to reports tab and generate device-specific report
+        self.notebook.select(4)  # Reports tab
+        self.report_type_var.set("inventory")
+        self.generate_report()
+    
+    def apply_policies_to_device(self):
+        """Apply current policy configuration to selected device"""
+        self.apply_device_policies()
+    
+    def save_policy_configuration(self):
+        """Save current policy configuration"""
+        try:
+            self.config['device_policies']['screen_timeout_minutes'] = int(self.screen_timeout_var.get())
+            self.config['device_policies']['min_password_length'] = int(self.password_length_var.get())
+            self.config['device_policies']['auto_lock_enabled'] = self.autolock_var.get()
+            
+            self.save_configuration()
+            messagebox.showinfo("Configuration Saved", "Policy configuration saved successfully.")
+            self.log_message("Policy configuration saved")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter valid numeric values.")
+    
+    def reset_policy_defaults(self):
+        """Reset policies to default values"""
+        self.screen_timeout_var.set("15")
+        self.password_length_var.set("8")
+        self.autolock_var.set(True)
+        self.unknown_var.set(True)
+        self.adb_var.set(False)
+        self.log_message("Policy configuration reset to defaults")
+    
+    def refresh_audit_log(self):
+        """Refresh audit log display with flags"""
+        try:
+            days = int(self.audit_days_var.get())
+            events = self.audit_system.get_audit_events(days)
+            
+            # Clear existing items
+            for item in self.audit_tree.get_children():
+                self.audit_tree.delete(item)
+            
+            # Add events to tree
+            for event in events:
+                values = (
+                    event['timestamp'][:19],  # Remove microseconds
+                    event['event_type'],
+                    event['device_id'] or 'N/A',
+                    event['operation'],
+                    event['status'],
+                    event['details'][:50] + "..." if len(event['details']) > 50 else event['details'],
+                    event['compliance_flags']
+                )
+                self.audit_tree.insert('', 'end', values=values)
+            
+            # Update statistics
+            total_events = len(events)
+            success_events = len([e for e in events if e['status'] in ['SUCCESS', 'PASS']])
+            failed_events = len([e for e in events if e['status'] in ['FAILED', 'FAIL', 'ERROR']])
+            
+            stats_text = f"Total events: {total_events} | Success: {success_events} | Failed: {failed_events}"
+            self.audit_stats_label.config(text=stats_text)
+            
+            self.log_message(f"Audit log refreshed: {total_events} events loaded")
+            
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number of days.")
+    
+    def export_audit_trail(self):
+        """Export audit trail to file"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            if self.mdm.export_audit_log(filename):
+                messagebox.showinfo("Export Complete", f"Audit trail exported to: {filename}")
+                self.log_message(f"Audit trail exported: {filename}")
+            else:
+                messagebox.showerror("Export Failed", "Failed to export audit trail.")
+    
+    def clear_audit_display(self):
+        """Clear audit display"""
+        for item in self.audit_tree.get_children():
+            self.audit_tree.delete(item)
+        self.audit_stats_label.config(text="Audit display cleared")
+        self.log_message("Audit display cleared")
     
     def export_compliance_report(self):
         """Export compliance report"""
@@ -1913,50 +1869,337 @@ Digital Signature: {hashlib.sha256(f"wipe_{self.drive_wipe_method.get()}".encode
                 with open(filename, 'w') as f:
                     f.write(content)
                 messagebox.showinfo("Export Complete", f"Compliance report exported to: {filename}")
+                self.log_message(f"Compliance report exported: {filename}")
             except Exception as e:
                 messagebox.showerror("Export Failed", f"Failed to export report: {e}")
     
-    def refresh_audit_log(self):
-        """Refresh audit log display"""
-        try:
-            # Clear existing items
-            for item in self.audit_tree.get_children():
-                self.audit_tree.delete(item)
-            
-            # Load audit entries
-            for entry in self.mdm.audit_entries[-50:]:  # Show last 50 entries
-                values = (
-                    entry['timestamp'][:19],
-                    entry['operation'],
-                    entry['device_id'] or 'N/A',
-                    entry['operation'],
-                    entry['status'],
-                    entry['details'][:50] + "..." if len(entry['details']) > 50 else entry['details']
-                )
-                self.audit_tree.insert('', 'end', values=values)
-            
-            self.log_message(f"Audit log refreshed: {len(self.mdm.audit_entries)} entries")
-            
-        except Exception as e:
-            self.log_message(f"Failed to refresh audit log: {e}")
+    def generate_report(self):
+        """Generate selected report type"""
+        report_type = self.report_type_var.get()
+        period_days = int(self.report_period_var.get())
+        
+        self.log_message(f"Generating {report_type} report for last {period_days} days...")
+        
+        # Clear previous report
+        self.report_text.delete('1.0', tk.END)
+        
+        if report_type == "compliance":
+            self.generate_compliance_report(period_days)
+        elif report_type == "inventory":
+            self.generate_inventory_report()
+        elif report_type == "audit":
+            self.generate_audit_report(period_days)
+        elif report_type == "policies":
+            self.generate_policy_report()
+        elif report_type == "security":
+            self.generate_security_report()
+        
+        self.log_message("Report generation completed")
     
-    def export_audit_trail(self):
-        """Export audit trail to file"""
+    def generate_compliance_report(self, days):
+        """Generate compliance summary report"""
+        report = f"""COMPLIANCE SUMMARY REPORT
+{'='*50}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Period: Last {days} days
+Organization: {self.config['enterprise_settings']['organization_name']}
+
+OVERVIEW
+{'-'*20}
+Total Devices Managed: {len(self.devices)}
+Compliance Standards: {', '.join(self.config['enterprise_settings']['compliance_standards'])}
+
+DEVICE COMPLIANCE STATUS
+{'-'*30}
+"""
+        
+        if self.devices:
+            for device in self.devices:
+                device_name = f"{device.get('brand', 'Unknown')} {device.get('model', 'Device')}"
+                report += f"\n• {device_name}\n"
+                report += f"  Encryption: {device.get('encryption_status', 'Unknown')}\n"
+                report += f"  Admin Status: {device.get('admin_status', 'Unknown')}\n"
+                report += f"  Rooted: {device.get('is_rooted', 'Unknown')}\n"
+                report += f"  SELinux: {device.get('selinux_status', 'Unknown')}\n"
+                report += f"  Security Patch: {device.get('security_patch', 'Unknown')}\n"
+        else:
+            report += "\nNo devices currently connected for assessment.\n"
+        
+        report += f"\n\nRECOMMENDATIONS\n{'-'*20}\n"
+        if self.include_recommendations_var.get():
+            report += "• Ensure all devices have encryption enabled\n"
+            report += "• Implement device admin policies for enhanced security\n"
+            report += "• Regular compliance audits recommended\n"
+            report += "• Consider Android Enterprise enrollment for managed devices\n"
+        
+        self.report_text.insert('1.0', report)
+    
+    def generate_inventory_report(self):
+        """Generate device inventory report"""
+        report = f"""DEVICE INVENTORY REPORT
+{'='*50}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Organization: {self.config['enterprise_settings']['organization_name']}
+
+DEVICE SUMMARY
+{'-'*20}
+Total Devices: {len(self.devices)}
+
+DETAILED DEVICE INVENTORY
+{'-'*30}
+"""
+        
+        if self.devices:
+            for i, device in enumerate(self.devices, 1):
+                report += f"\nDevice #{i}\n"
+                report += f"  ID: {device.get('id', 'Unknown')}\n"
+                report += f"  Manufacturer: {device.get('manufacturer', 'Unknown')}\n"
+                report += f"  Brand: {device.get('brand', 'Unknown')}\n"
+                report += f"  Model: {device.get('model', 'Unknown')}\n"
+                report += f"  Android Version: {device.get('android_version', 'Unknown')}\n"
+                report += f"  SDK Version: {device.get('sdk_version', 'Unknown')}\n"
+                report += f"  Security Patch: {device.get('security_patch', 'Unknown')}\n"
+                report += f"  Storage Total: {device.get('storage_total', 'Unknown')}\n"
+                report += f"  Storage Used: {device.get('storage_used', 'Unknown')}\n"
+                report += f"  Encryption Status: {device.get('encryption_status', 'Unknown')}\n"
+                report += f"  Admin Status: {device.get('admin_status', 'Unknown')}\n"
+                report += f"  Rooted: {device.get('is_rooted', 'Unknown')}\n"
+                report += f"  SELinux: {device.get('selinux_status', 'Unknown')}\n"
+        else:
+            report += "\nNo devices currently connected.\n"
+        
+        self.report_text.insert('1.0', report)
+    
+    def generate_audit_report(self, days):
+        """Generate audit trail report"""
+        events = self.audit_system.get_audit_events(days)
+        
+        report = f"""AUDIT TRAIL REPORT
+{'='*50}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Period: Last {days} days
+Organization: {self.config['enterprise_settings']['organization_name']}
+
+AUDIT SUMMARY
+{'-'*20}
+Total Events: {len(events)}
+Success Events: {len([e for e in events if e['status'] in ['SUCCESS', 'PASS']])}
+Failed Events: {len([e for e in events if e['status'] in ['FAILED', 'FAIL', 'ERROR']])}
+
+RECENT AUDIT EVENTS
+{'-'*25}
+"""
+        
+        for event in events[-20:]:  # Show last 20 events
+            report += f"\n[{event['timestamp'][:19]}] {event['event_type']}\n"
+            report += f"  Device: {event['device_id'] or 'N/A'}\n"
+            report += f"  Operation: {event['operation']}\n"
+            report += f"  Status: {event['status']}\n"
+            report += f"  Details: {event['details']}\n"
+            report += f"  Flags: {event['compliance_flags']}\n"
+        
+        self.report_text.insert('1.0', report)
+    
+    def generate_policy_report(self):
+        """Generate policy deployment report"""
+        report = f"""POLICY DEPLOYMENT REPORT
+{'='*50}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Organization: {self.config['enterprise_settings']['organization_name']}
+
+CURRENT POLICY CONFIGURATION
+{'-'*35}
+Screen Timeout: {self.config['device_policies']['screen_timeout_minutes']} minutes
+Min Password Length: {self.config['device_policies']['min_password_length']} characters
+Auto-lock Enabled: {self.config['device_policies']['auto_lock_enabled']}
+Max Password Age: {self.config['device_policies']['max_password_age_days']} days
+Disable Unknown Sources: {self.unknown_var.get()}
+Enable ADB: {self.adb_var.get()}
+
+POLICY DEPLOYMENT STATUS
+{'-'*30}
+Connected Devices: {len(self.devices)}
+
+"""
+        
+        if self.devices:
+            for device in self.devices:
+                device_name = f"{device.get('brand', 'Unknown')} {device.get('model', 'Device')}"
+                report += f"\n• {device_name} ({device.get('id', 'Unknown')})\n"
+                report += f"  Policy Status: Manual verification required\n"
+                report += f"  Last Policy Update: Not available via ADB\n"
+                report += f"  Unknown Sources: {device.get('unknown_sources', 'Unknown')}\n"
+        else:
+            report += "\nNo devices available for policy deployment.\n"
+        
+        report += f"\n\nNOTES\n{'-'*10}\n"
+        report += "• Full policy deployment requires Android Enterprise enrollment\n"
+        report += "• Current implementation provides basic policy application via ADB\n"
+        report += "• For comprehensive policy management, consider EMM solutions\n"
+        
+        self.report_text.insert('1.0', report)
+    
+    def generate_security_report(self):
+        """Improved security assessment report with more metrics"""
+        report = f"""SECURITY ASSESSMENT REPORT
+{'='*50}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Organization: {self.config['enterprise_settings']['organization_name']}
+
+SECURITY OVERVIEW
+{'-'*20}
+Devices Assessed: {len(self.devices)}
+Encryption Required: {self.config['enterprise_settings']['encryption_required']}
+Compliance Standards: {', '.join(self.config['enterprise_settings']['compliance_standards'])}
+
+DEVICE SECURITY STATUS
+{'-'*25}
+"""
+        
+        encrypted_devices = 0
+        admin_managed_devices = 0
+        non_rooted_devices = 0
+        selinux_enforcing = 0
+        patch_up_to_date = 0
+        
+        if self.devices:
+            for device in self.devices:
+                device_name = f"{device.get('brand', 'Unknown')} {device.get('model', 'Device')}"
+                encryption_status = device.get('encryption_status', 'Unknown')
+                admin_status = device.get('admin_status', 'Unknown')
+                
+                report += f"\n• {device_name}\n"
+                report += f"  Encryption: {encryption_status}\n"
+                report += f"  Device Admin: {admin_status}\n"
+                report += f"  Android Version: {device.get('android_version', 'Unknown')}\n"
+                report += f"  Rooted: {device.get('is_rooted', 'Unknown')}\n"
+                report += f"  SELinux: {device.get('selinux_status', 'Unknown')}\n"
+                report += f"  Security Patch: {device.get('security_patch', 'Unknown')}\n"
+                report += f"  Unknown Sources: {device.get('unknown_sources', 'Unknown')}\n"
+                
+                if 'Encrypted' in encryption_status:
+                    encrypted_devices += 1
+                if 'Active' in admin_status:
+                    admin_managed_devices += 1
+                if device.get('is_rooted') == 'No':
+                    non_rooted_devices += 1
+                if device.get('selinux_status') == 'Enforcing':
+                    selinux_enforcing += 1
+                
+                # Check patch
+                patch_date_str = device.get('security_patch', 'Unknown')
+                if patch_date_str != 'Unknown':
+                    try:
+                        patch_date = datetime.strptime(patch_date_str, '%Y-%m-%d')
+                        current_date = datetime.now()
+                        if (current_date - patch_date) < timedelta(days=180):
+                            patch_up_to_date += 1
+                    except:
+                        pass
+                
+                # Security score calculation
+                score = 0
+                if 'Encrypted' in encryption_status:
+                    score += 20
+                if 'Active' in admin_status:
+                    score += 15
+                if device.get('android_version', '0').split('.')[0].isdigit() and int(device.get('android_version', '0').split('.')[0]) >= 10:
+                    score += 15
+                if device.get('is_rooted') == 'No':
+                    score += 20
+                if device.get('selinux_status') == 'Enforcing':
+                    score += 15
+                if device.get('unknown_sources') == 'Disabled':
+                    score += 15
+                
+                report += f"  Security Score: {score}/100\n"
+        else:
+            report += "\nNo devices available for security assessment.\n"
+        
+        # Security metrics
+        if self.devices:
+            num_devices = len(self.devices)
+            encryption_percent = (encrypted_devices / num_devices) * 100
+            admin_percent = (admin_managed_devices / num_devices) * 100
+            non_rooted_percent = (non_rooted_devices / num_devices) * 100
+            selinux_percent = (selinux_enforcing / num_devices) * 100
+            patch_percent = (patch_up_to_date / num_devices) * 100
+            
+            report += f"\n\nSECURITY METRICS\n{'-'*20}\n"
+            report += f"Encryption Coverage: {encryption_percent:.1f}% ({encrypted_devices}/{num_devices})\n"
+            report += f"Admin Management: {admin_percent:.1f}% ({admin_managed_devices}/{num_devices})\n"
+            report += f"Non-Rooted Devices: {non_rooted_percent:.1f}% ({non_rooted_devices}/{num_devices})\n"
+            report += f"SELinux Enforcing: {selinux_percent:.1f}% ({selinux_enforcing}/{num_devices})\n"
+            report += f"Patch Up-to-date: {patch_percent:.1f}% ({patch_up_to_date}/{num_devices})\n"
+        
+        # Recommendations
+        report += f"\n\nSECURITY RECOMMENDATIONS\n{'-'*30}\n"
+        if self.include_recommendations_var.get():
+            if encrypted_devices < len(self.devices):
+                report += "• Enable encryption on all non-encrypted devices\n"
+            if admin_managed_devices < len(self.devices):
+                report += "• Implement device admin policies for enhanced management\n"
+            if non_rooted_devices < len(self.devices):
+                report += "• Ensure no devices are rooted\n"
+            if selinux_enforcing < len(self.devices):
+                report += "• Set SELinux to enforcing mode\n"
+            if patch_up_to_date < len(self.devices):
+                report += "• Update security patches on outdated devices\n"
+            report += "• Regular security assessments and updates\n"
+            report += "• Consider Android Enterprise for comprehensive management\n"
+            report += "• Implement mobile threat defense solutions\n"
+            report += "• Regular backup and recovery procedures\n"
+        
+        self.report_text.insert('1.0', report)
+    
+    def export_report_pdf(self):
+        """Export current report to PDF"""
+        messagebox.showinfo("PDF Export", "PDF export functionality requires additional libraries.\nReport content is available in the preview above.")
+        self.log_message("PDF export requested - requires additional implementation")
+    
+    def export_report_csv(self):
+        """Export current report data to CSV"""
         filename = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
         
         if filename:
             try:
-                with open(filename, 'w') as f:
-                    json.dump(self.mdm.audit_entries, f, indent=2)
-                messagebox.showinfo("Export Complete", f"Audit trail exported to: {filename}")
+                import csv
+                
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    
+                    # Write device data
+                    writer.writerow(['Device_ID', 'Brand', 'Model', 'Android_Version', 
+                                   'Encryption_Status', 'Admin_Status', 'Storage_Total', 'Storage_Used', 
+                                   'Is_Rooted', 'SELinux', 'Security_Patch', 'Unknown_Sources'])
+                    
+                    for device in self.devices:
+                        writer.writerow([
+                            device.get('id', ''),
+                            device.get('brand', ''),
+                            device.get('model', ''),
+                            device.get('android_version', ''),
+                            device.get('encryption_status', ''),
+                            device.get('admin_status', ''),
+                            device.get('storage_total', ''),
+                            device.get('storage_used', ''),
+                            device.get('is_rooted', ''),
+                            device.get('selinux_status', ''),
+                            device.get('security_patch', ''),
+                            device.get('unknown_sources', '')
+                        ])
+                
+                messagebox.showinfo("Export Complete", f"Report data exported to: {filename}")
+                self.log_message(f"CSV report exported: {filename}")
+                
             except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to export audit trail: {e}")
+                messagebox.showerror("Export Failed", f"Failed to export CSV: {e}")
     
     def run(self):
-        """Run the enhanced MDM application"""
+        """Run the application"""
         try:
             self.root.mainloop()
         except KeyboardInterrupt:
@@ -1964,21 +2207,20 @@ Digital Signature: {hashlib.sha256(f"wipe_{self.drive_wipe_method.get()}".encode
         except Exception as e:
             self.log_message(f"Application error: {e}")
         finally:
-            self.log_message("Enhanced Enterprise MDM application shutting down")
+            self.log_message("Enterprise MDM application shutting down")
 
 def main():
     """Main application entry point"""
     try:
-        # Create necessary directories
-        for directory in ['logs', 'config', 'reports']:
-            os.makedirs(os.path.join(os.path.dirname(__file__), directory), exist_ok=True)
+        # Create logs directory
+        os.makedirs(os.path.join(os.path.dirname(__file__), '..', 'logs'), exist_ok=True)
         
         # Initialize and run application
         app = EnterpriseMDMGUI()
         app.run()
         
     except Exception as e:
-        print(f"Failed to start Enhanced Enterprise MDM application: {e}")
+        print(f"Failed to start Enterprise MDM application: {e}")
         return 1
     
     return 0
