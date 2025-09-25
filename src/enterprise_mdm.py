@@ -260,31 +260,56 @@ class FactoryResetEngine:
         return True  # Placeholder
     
     def perform_factory_reset(self, device_id, reason, progress_callback=None):
-        """Perform factory reset operation"""
-        steps = [
-            ("Backing up critical system logs...", 10),
-            ("Stopping all applications...", 20),
-            ("Clearing user data...", 40),
-            ("Removing installed applications...", 60),
-            ("Resetting system configurations...", 80),
-            ("Finalizing factory reset...", 90),
-            ("Generating reset completion report...", 100)
-        ]
-        
-        try:
-            for step_text, progress in steps:
-                if progress_callback:
-                    progress_callback(step_text, progress)
-                
-                self.log_callback(f"Factory Reset: {step_text}")
-                
-                # Simulate processing time
-                time.sleep(1)
-                
-            return True, "Factory reset completed successfully"
-            
-        except Exception as e:
-            return False, f"Factory reset failed: {e}"
+    """Perform factory reset operation"""
+    try:
+        # Step 1: Log the initiation of the factory reset
+        if progress_callback:
+            progress_callback("Initiating factory reset...", 10)
+        self.log_callback("Factory Reset: Initiating factory reset...")
+
+        # Step 2: Execute the actual ADB factory reset command
+        if progress_callback:
+            progress_callback("Sending factory reset command...", 50)
+        self.log_callback("Factory Reset: Sending factory reset command...")
+
+        result = subprocess.run(
+            ['adb', '-s', device_id, 'shell', 'recovery', '--wipe_data'],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            error_msg = f"ADB factory reset failed: {result.stderr}"
+            self.log_callback(error_msg)
+            return False, error_msg
+
+        # Step 3: Wait for device to reboot (recovery mode will handle the reset)
+        if progress_callback:
+            progress_callback("Waiting for device to complete reset...", 80)
+        self.log_callback("Factory Reset: Waiting for device to complete reset...")
+        time.sleep(10)  # Wait for the device to initiate the reset process
+
+        # Step 4: Verify device is no longer accessible (optional, as device may reboot)
+        if progress_callback:
+            progress_callback("Verifying factory reset completion...", 90)
+        self.log_callback("Factory Reset: Verifying completion...")
+
+        # Optional: Check if device is still connected (it may not be after reset)
+        verify_result = subprocess.run(
+            ['adb', '-s', device_id, 'shell', 'echo', 'test'],
+            capture_output=True, text=True, timeout=10
+        )
+
+        # Step 5: Finalize and log completion
+        if progress_callback:
+            progress_callback("Generating reset completion report...", 100)
+        self.log_callback("Factory Reset: Generating reset completion report...")
+
+        return True, "Factory reset completed successfully"
+
+    except subprocess.TimeoutExpired:
+        return False, "Factory reset timed out"
+    except Exception as e:
+        return False, f"Factory reset failed: {e}"
 
 class EnterpriseMDM:
     """Enhanced Enterprise-grade Android device management"""
