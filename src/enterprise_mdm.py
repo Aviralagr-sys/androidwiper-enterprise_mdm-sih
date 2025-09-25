@@ -290,7 +290,6 @@ class EnterpriseMDM:
         try:
             info = {}
             
-            # Get basic device properties
             props = {
                 'brand': 'ro.product.brand',
                 'model': 'ro.product.model',
@@ -309,7 +308,6 @@ class EnterpriseMDM:
                 except:
                     info[key] = 'Unknown'
             
-            # Check if rooted
             try:
                 root_check = subprocess.run(['adb', '-s', device_id, 'shell', 'which', 'su'],
                                             capture_output=True, text=True, timeout=5)
@@ -317,7 +315,6 @@ class EnterpriseMDM:
             except:
                 info['is_rooted'] = 'Unknown'
             
-            # Check SELinux status
             try:
                 selinux = subprocess.run(['adb', '-s', device_id, 'shell', 'getenforce'],
                                          capture_output=True, text=True, timeout=5)
@@ -325,7 +322,6 @@ class EnterpriseMDM:
             except:
                 info['selinux_status'] = 'Unknown'
             
-            # Check unknown sources
             try:
                 unknown_sources = subprocess.run(['adb', '-s', device_id, 'shell', 'settings', 'get', 'secure', 'install_non_market_apps'],
                                                  capture_output=True, text=True, timeout=5)
@@ -333,13 +329,10 @@ class EnterpriseMDM:
             except:
                 info['unknown_sources'] = 'Unknown'
             
-            # Get storage info
             info.update(self._get_storage_info(device_id))
             
-            # Check encryption status
             info['encryption_status'] = self._check_encryption_status(device_id)
             
-            # Check device admin status
             info['admin_status'] = self._check_device_admin_status(device_id)
             
             return info
@@ -837,10 +830,10 @@ class EnterpriseMDMGUI:
         self.logger = logging.getLogger(__name__)
     
     def setup_window(self):
-        """Setup main window with purple-black theme"""
+        """Setup main window with custom theme"""
         self.root.title("Enterprise Mobile Device Management System")
         self.root.geometry("1400x900")
-        self.root.configure(bg='#000000')  # Black background
+        self.root.configure(bg='#2B2B2B')  # Base background color from theme
         
         # Set window icon if available
         try:
@@ -848,112 +841,117 @@ class EnterpriseMDMGUI:
         except:
             pass
         
-        # Create custom style for purple-black theme
+        # Configure style for custom theme
         self.style = ttk.Style()
-        self.style.theme_create('purpleblack', parent='clam', settings={
-            '.': {
-                'configure': {
-                    'background': '#000000',  # Black
-                    'foreground': '#800080'   # Purple
-                }
-            },
+        self.style.theme_create('custom_theme', parent='default', settings={
             'TFrame': {
                 'configure': {
-                    'background': '#000000'
+                    'background': '#423a4a',  # Frame background
+                    'borderwidth': 0
                 }
             },
             'TLabel': {
                 'configure': {
-                    'background': '#000000',
-                    'foreground': '#800080'
+                    'background': '#2B2B2B',
+                    'foreground': '#DCE4EE'  # Text color
                 }
             },
             'TButton': {
                 'configure': {
-                    'background': '#800080',
-                    'foreground': '#000000',
-                    'bordercolor': '#800080'
+                    'background': '#705185',
+                    'foreground': '#DCE4EE',
+                    'borderwidth': 0
                 },
                 'map': {
-                    'background': [('active', '#9932CC')],  # Lighter purple on hover
-                    'foreground': [('active', '#000000')]
+                    'background': [('active', '#84629c')],  # Hover color
+                    'foreground': [('active', '#DCE4EE')]
                 }
             },
             'TEntry': {
                 'configure': {
-                    'fieldbackground': '#000000',
-                    'foreground': '#800080',
-                    'insertcolor': '#800080'
+                    'fieldbackground': '#2e2833',
+                    'foreground': '#DCE4EE',
+                    'insertcolor': '#DCE4EE',
+                    'borderwidth': 2,
+                    'bordercolor': '#5a5263'
                 }
             },
             'TCheckbutton': {
                 'configure': {
-                    'foreground': '#800080',
-                    'indicatorbackground': '#000000'
+                    'background': '#423a4a',
+                    'foreground': '#DCE4EE',
+                    'selectcolor': '#705185'
                 }
             },
             'TRadiobutton': {
                 'configure': {
-                    'foreground': '#800080',
-                    'indicatorbackground': '#000000'
+                    'background': '#423a4a',
+                    'foreground': '#DCE4EE',
+                    'selectcolor': '#705185'
                 }
             },
             'TCombobox': {
                 'configure': {
-                    'fieldbackground': '#000000',
-                    'background': '#000000',
-                    'foreground': '#800080',
-                    'arrowcolor': '#800080'
+                    'fieldbackground': '#2e2833',
+                    'background': '#705185',
+                    'foreground': '#DCE4EE',
+                    'borderwidth': 2,
+                    'bordercolor': '#5a5263'
+                },
+                'map': {
+                    'background': [('active', '#84629c')]
                 }
             },
             'Treeview': {
                 'configure': {
-                    'background': '#000000',
-                    'foreground': '#800080',
-                    'fieldbackground': '#000000'
+                    'background': '#2B2B2B',
+                    'foreground': '#DCE4EE',
+                    'fieldbackground': '#2B2B2B'
                 },
                 'map': {
-                    'background': [('selected', '#800080')],
-                    'foreground': [('selected', '#000000')]
+                    'background': [('selected', '#705185')],
+                    'foreground': [('selected', '#DCE4EE')]
                 }
             },
             'TNotebook': {
                 'configure': {
-                    'background': '#000000',
-                    'tabmargins': [2, 5, 2, 0]
+                    'background': '#2B2B2B'
                 }
             },
             'TNotebook.Tab': {
                 'configure': {
-                    'background': '#000000',
-                    'foreground': '#800080'
+                    'background': '#423a4a',
+                    'foreground': '#DCE4EE'
                 },
                 'map': {
-                    'background': [('selected', '#800080')],
-                    'foreground': [('selected', '#000000')],
-                    'expand': [('selected', [1, 1, 1, 0])]
+                    'background': [('selected', '#705185')],
+                    'foreground': [('selected', '#DCE4EE')]
                 }
             },
             'TProgressbar': {
                 'configure': {
-                    'background': '#800080',
-                    'troughcolor': '#000000'
+                    'background': '#5a5263',
+                    'troughcolor': '#423a4a',
+                    'borderwidth': 0
                 }
             },
             'TScrollbar': {
                 'configure': {
-                    'background': '#000000',
-                    'troughcolor': '#000000',
-                    'arrowcolor': '#800080'
+                    'background': '#2B2B2B',
+                    'troughcolor': '#2B2B2B',
+                    'arrowcolor': '#5a5263'
+                },
+                'map': {
+                    'background': [('active', '#705185')]
                 }
             }
         })
-        self.style.theme_use('purpleblack')
+        self.style.theme_use('custom_theme')
     
     def setup_gui(self):
         """Create complete GUI with theme applied"""
         # Main container with scrollable canvas
-        self.main_canvas = tk.Canvas(self.root, bg='#000000')
+        self.main_canvas = tk.Canvas(self.root, bg='#2B2B2B')
         scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.main_canvas.yview)
         self.scrollable_frame = ttk.Frame(self.main_canvas)
         
@@ -987,10 +985,10 @@ class EnterpriseMDMGUI:
         self.create_status_bar()
         
         # Apply theme to scrolledtext widgets in tabs
-        self.device_info_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
-        self.compliance_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
-        self.sanitization_results.config(bg='#000000', fg='#800080', insertbackground='#800080')
-        self.report_text.config(bg='#000000', fg='#800080', insertbackground='#800080')
+        self.device_info_text.config(bg='#2e2833', fg='#DCE4EE', insertbackground='#DCE4EE')
+        self.compliance_text.config(bg='#2e2833', fg='#DCE4EE', insertbackground='#DCE4EE')
+        self.sanitization_results.config(bg='#2e2833', fg='#DCE4EE', insertbackground='#DCE4EE')
+        self.report_text.config(bg='#2e2833', fg='#DCE4EE', insertbackground='#DCE4EE')
     
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling"""
@@ -1015,7 +1013,7 @@ class EnterpriseMDMGUI:
         status_frame.pack(fill='x', padx=10, pady=5)
         
         self.system_status_label = ttk.Label(status_frame, text="Checking system prerequisites...", 
-                                           foreground="#9932CC")  # Lighter purple
+                                           foreground="#DCE4EE")
         self.system_status_label.pack()
         
         # Device detection controls
@@ -1099,7 +1097,7 @@ class EnterpriseMDMGUI:
 This operation cannot be undone. Ensure you have proper authorization and backups before proceeding.
 Only user-accessible data will be sanitized (no system files or applications)."""
         
-        ttk.Label(warning_frame, text=warning_text, foreground="#9932CC", font=('Arial', 10, 'bold')).pack()  # Lighter purple
+        ttk.Label(warning_frame, text=warning_text, foreground="#DCE4EE", font=('Arial', 10, 'bold')).pack()
         
         # Device selection
         device_frame = ttk.LabelFrame(sanitization_frame, text="Device Selection", padding=10)
@@ -1109,7 +1107,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         device_info_frame.pack(fill='x')
         
         ttk.Label(device_info_frame, text="Selected Device:", font=('Arial', 10, 'bold')).pack(side='left')
-        self.selected_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="#9932CC")
+        self.selected_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="#DCE4EE")
         self.selected_device_label.pack(side='left', padx=10)
         
         ttk.Button(device_info_frame, text="Refresh Device Info", 
@@ -1128,7 +1126,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         ttk.Button(auth_controls, text="Verify Authorization", 
                   command=self.verify_sanitization_auth).pack(side='left', padx=5)
         
-        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="#9932CC")
+        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="#DCE4EE")
         self.auth_status_label.pack(pady=5)
         
         # Sanitization standards
@@ -1549,7 +1547,7 @@ Digital Signature: {hashlib.sha256(content.encode()).hexdigest()[:32]}
             frame = ttk.LabelFrame(metrics_frame, text=standard, padding=10)
             frame.pack(side='left', padx=10, fill='both', expand=True)
             
-            status_label = ttk.Label(frame, text="Not Checked", foreground="#9932CC", font=('Arial', 11, 'bold'))
+            status_label = ttk.Label(frame, text="Not Checked", foreground="#DCE4EE", font=('Arial', 11, 'bold'))
             status_label.pack()
             
             details_label = ttk.Label(frame, text="Run compliance check", font=('Arial', 9))
@@ -1815,7 +1813,7 @@ Digital Signature: {hashlib.sha256(content.encode()).hexdigest()[:32]}
         self.status_label.pack(side='left')
         
         # Connection status
-        self.connection_label = ttk.Label(self.status_bar, text="●", foreground="#9932CC")
+        self.connection_label = ttk.Label(self.status_bar, text="●", foreground="#DCE4EE")
         self.connection_label.pack(side='right', padx=5)
         
         ttk.Label(self.status_bar, text="ADB Status:").pack(side='right')
