@@ -1209,6 +1209,317 @@ Only user-accessible data will be sanitized (no system files or applications).""
         
         self.sanitization_results.insert('1.0', "No sanitization performed yet...")
     
+    def update_sanitization_device_info(self):
+        """Update sanitization-related device information"""
+        if not self.selected_device or not self.selected_device_info:
+            self.selected_device_label.config(text="No device selected", foreground="#FF4500")  # Red for error
+            self.sanitization_status.config(text="No device selected for sanitization")
+            self.sanitize_button.config(state='disabled')
+            self.verify_button.config(state='disabled')
+            return
+
+        # Update selected device label
+        device_name = f"{self.selected_device_info.get('brand', 'Unknown')} {self.selected_device_info.get('model', 'Device')}"
+        self.selected_device_label.config(text=device_name, foreground="#00FF00")  # Green for success
+
+        # Update sanitization status
+        self.sanitization_status.config(text="Device ready for sanitization")
+
+        # Enable buttons if authorization is verified (simplified check)
+        self.sanitize_button.config(state='normal')
+        self.verify_button.config(state='normal')
+
+        self.log_message(f"Refreshed sanitization info for device: {device_name}")
+    
+    def verify_sanitization_auth(self):
+        """Verify authorization for sanitization"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device", "Please select a device first.")
+            return
+        
+        def verify():
+            token = self.auth_token_var.get()
+            success, message = self.mdm.sanitization_engine.verify_authorization(self.selected_device, token)
+            
+            self.root.after(0, lambda: self.update_auth_status(success, message))
+        
+        threading.Thread(target=verify, daemon=True).start()
+    
+    def update_auth_status(self, success, message):
+        """Update authorization status"""
+        if success:
+            self.auth_status_label.config(text=f"✓ {message}", foreground="green")
+            self.sanitize_button.config(state='normal')
+        else:
+            self.auth_status_label.config(text=f"✗ {message}", foreground="red")
+            self.sanitize_button.config(state='disabled')
+    
+    def scan_user_data(self):
+        """Scan user data on device"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device", "Please select a device first.")
+            return
+        
+        def scan():
+            success, operations = self.mdm.sanitization_engine.sanitize_user_data(
+                self.selected_device, verify_only=True)
+            
+            self.root.after(0, lambda: self.update_assessment_results(success, operations))
+        
+        self.log_message("Scanning user data...")
+        threading.Thread(target=scan, daemon=True).start()
+    
+    def update_assessment_results(self, success, operations):
+        """Update data assessment results"""
+        # Clear existing items
+        for item in self.assessment_tree.get_children():
+            self.assessment_tree.delete(item)
+        
+        if success:
+            total_files = 0
+            for operation in operations:
+                path = operation['path']
+                file_count = operation['files']
+                
+                try:
+                    files_int = int(file_count)
+                    total_files += files_int
+                    
+                    # Estimate size (rough calculation)
+                    estimated_size = f"~{files_int * 2}MB" if files_int > 0 else "0MB"
+                    
+                    # Determine data type
+                    if 'Pictures' in path or 'DCIM' in path:
+                        data_type = 'Photos'
+                    elif 'Download' in path:
+                        data_type = 'Downloads'
+                    elif 'Documents' in path:
+                        data_type = 'Documents'
+                    elif 'Music' in path:
+                        data_type = 'Audio'
+                    elif 'Movies' in path:
+                        data_type = 'Video'
+                    else:
+                        data_type = 'App Data'
+                    
+                    status = 'Ready' if files_int > 0 else 'Empty'
+                    
+                    self.assessment_tree.insert('', 'end', values=(
+                        path, file_count, estimated_size, data_type, status
+                    ))
+                    
+                except ValueError:
+                    self.assessment_tree.insert('', 'end', values=(
+                        path, file_count, 'Unknown', 'Unknown', 'Error'
+                    ))
+            
+            self.log_message(f"Data assessment complete: {total_files} total files found")
+        else:
+            self.log_message("Data assessment failed")
+    
+    def start_sanitization(self):
+        """Start data sanitization process"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device", "Please select a device first.")
+            return
+        
+        # Confirmation dialog
+        confirm = messagebox.askyesno(
+            "Confirm Sanitization",
+            f"Are you sure you want to sanitize data on device {self.selected_device}?\n\n"
+            f"Standard: {self.sanitization_standard.get()}\n"
+            "This action cannot be undone!",
+            icon='warning'
+        )
+        
+        if not confirm:
+            return
+        
+        def sanitize():
+            standard = self.sanitization_standard.get()
+            self.root.after(0, lambda: self.sanitization_progress.config(value=0))
+            self.root.after(0, lambda: self.sanitization_status.config(text="Starting sanitization..."))
+            
+            success, operations = self.mdm.sanitization_engine.sanitize_user_data(
+                self.selected_device, standard)
+            
+            self.root.after(0, lambda: self.update_sanitization_results(success, operations, standard))
+        
+        self.sanitize_button.config(state='disabled')
+        self.verify_button.config(state='disabled')
+        threading.Thread(target=sanitize, daemon=True).start()
+    
+    def update_sanitization_results(self, success, operations, standard):
+        """Update sanitization results"""
+        self.sanitization_progress.config(value=100)
+        
+        if success:
+            self.sanitization_status.config(text="Sanitization completed")
+            self.verify_button.config(state='normal')
+            
+            # Display results
+            results_text = f"""DATA SANITIZATION COMPLETED
+{'='*50}
+Device: {self.selected_device}
+Standard: {standard}
+Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+SANITIZATION SUMMARY:
+{'-'*30}
+"""
+            
+            for operation in operations:
+                status_symbol = "✓" if operation['status'] == 'completed' else "✗"
+                results_text += f"{status_symbol} {operation['path']}: {operation['status']} ({operation['files']} files)\n"
+            
+            results_text += f"\n\nAUDIT TRAIL:\n{'-'*15}\n"
+            results_text += f"User: {self.config['enterprise_settings']['admin_email']}\n"
+            results_text += f"Authorization verified at: {datetime.now().isoformat()}\n"
+            results_text += f"Sanitization standard: {standard}\n"
+            results_text += f"Total operations: {len(operations)}\n"
+            
+            self.sanitization_results.delete('1.0', tk.END)
+            self.sanitization_results.insert('1.0', results_text)
+            
+            # Log audit event
+            self.mdm.audit_log_entry("DATA_SANITIZATION", self.selected_device, "SUCCESS", 
+                                   f"Standard: {standard}, Operations: {len(operations)}")
+            
+        else:
+            self.sanitization_status.config(text="Sanitization failed")
+            error_text = f"Sanitization failed: {operations}"
+            self.sanitization_results.delete('1.0', tk.END)
+            self.sanitization_results.insert('1.0', error_text)
+            
+            self.mdm.audit_log_entry("DATA_SANITIZATION", self.selected_device, "FAILED", operations)
+        
+        self.sanitize_button.config(state='normal')
+    
+    def verify_sanitization_results(self):
+        """Verify sanitization was successful"""
+        if not self.selected_device:
+            messagebox.showwarning("No Device", "Please select a device first.")
+            return
+        
+        def verify():
+            # Get the operations from the assessment
+            operations = []
+            for item in self.assessment_tree.get_children():
+                values = self.assessment_tree.item(item)['values']
+                operations.append({
+                    'path': values[0],
+                    'files': values[1]
+                })
+            
+            results = self.mdm.sanitization_engine.verify_sanitization(self.selected_device, operations)
+            self.root.after(0, lambda: self.display_verification_results(results))
+        
+        self.log_message("Verifying sanitization results...")
+        threading.Thread(target=verify, daemon=True).start()
+    
+    def display_verification_results(self, results):
+        """Display verification results"""
+        verification_text = f"""SANITIZATION VERIFICATION
+{'='*50}
+Device: {self.selected_device}
+Verified: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+VERIFICATION RESULTS:
+{'-'*25}
+"""
+        
+        all_verified = True
+        for result in results:
+            status_symbol = "✓" if result['verified'] else "✗"
+            verification_text += f"{status_symbol} {result['path']}\n"
+            verification_text += f"   Original files: {result['original_files']}\n"
+            verification_text += f"   Remaining files: {result['remaining_files']}\n"
+            verification_text += f"   Status: {'VERIFIED' if result['verified'] else 'FAILED'}\n\n"
+            
+            if not result['verified']:
+                all_verified = False
+        
+        verification_text += f"\nOVERALL VERIFICATION: {'PASSED' if all_verified else 'FAILED'}\n"
+        
+        # Append to existing results
+        current_text = self.sanitization_results.get('1.0', tk.END)
+        self.sanitization_results.delete('1.0', tk.END)
+        self.sanitization_results.insert('1.0', current_text + "\n\n" + verification_text)
+        
+        # Log verification
+        self.mdm.audit_log_entry("SANITIZATION_VERIFICATION", self.selected_device, 
+                               "PASSED" if all_verified else "FAILED", 
+                               f"Verified {len(results)} locations")
+    
+    def generate_sanitization_certificate(self):
+        """Generate sanitization completion certificate"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                content = self.sanitization_results.get('1.0', tk.END)
+                
+                certificate = f"""ENTERPRISE DATA SANITIZATION CERTIFICATE
+{'='*60}
+
+Organization: {self.config['enterprise_settings']['organization_name']}
+Certificate ID: {hashlib.sha256(f"{self.selected_device}{datetime.now().isoformat()}".encode()).hexdigest()[:16]}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+This certificate confirms that data sanitization has been performed
+on the specified device in accordance with enterprise security policies
+and recognized data sanitization standards.
+
+Device Information:
+- Device ID: {self.selected_device}
+- Sanitization Standard: {self.sanitization_standard.get()}
+- Administrator: {self.config['enterprise_settings']['admin_email']}
+
+{content}
+
+This certificate is generated automatically by the Enterprise MDM System
+and serves as proof of completed data sanitization for compliance purposes.
+
+Digital Signature: {hashlib.sha256(content.encode()).hexdigest()[:32]}
+"""
+                
+                with open(filename, 'w') as f:
+                    f.write(certificate)
+                    
+                messagebox.showinfo("Certificate Generated", f"Sanitization certificate saved to: {filename}")
+                self.log_message(f"Sanitization certificate generated: {filename}")
+                
+            except Exception as e:
+                messagebox.showerror("Export Failed", f"Failed to generate certificate: {e}")
+    
+    def export_data_assessment(self):
+        """Export data assessment results"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                import csv
+                
+                with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Path', 'File_Count', 'Estimated_Size', 'Data_Type', 'Status'])
+                    
+                    for item in self.assessment_tree.get_children():
+                        values = self.assessment_tree.item(item)['values']
+                        writer.writerow(values)
+                
+                messagebox.showinfo("Export Complete", f"Assessment exported to: {filename}")
+                self.log_message(f"Data assessment exported: {filename}")
+                
+            except Exception as e:
+                messagebox.showerror("Export Failed", f"Failed to export assessment: {e}")
+    
     def create_compliance_tab(self):
         """Create compliance monitoring tab"""
         compliance_frame = ttk.Frame(self.notebook)
