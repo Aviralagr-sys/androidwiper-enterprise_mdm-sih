@@ -803,9 +803,17 @@ class EnterpriseMDMGUI:
         self.logger = logging.getLogger(__name__)
     
     def setup_window(self):
-        """Setup main window with custom Professional Dark Theme"""
-        self.root.title("Enterprise Mobile Device Management System")
-        self.root.geometry("1400x900")
+        """Setup main window with custom Professional Dark Theme and fullscreen support"""
+        self.root.title("Enterprise Mobile Device Management System")  # Ensure full title
+        # Enable fullscreen and allow toggle with F11
+        self.root.attributes('-fullscreen', True)
+        self.is_fullscreen = True
+        self.root.bind('<F11>', lambda event: self.toggle_fullscreen())
+        self.root.bind('<Escape>', lambda event: self.toggle_fullscreen() if self.is_fullscreen else None)
+
+        # Adjust title font if needed to prevent truncation
+        self.root.option_add('*TLabel*Font', 'Arial 18')
+
         self.root.configure(bg='#1E272E')  # Deep charcoal gray
 
         self.style = ttk.Style()
@@ -829,7 +837,15 @@ class EnterpriseMDMGUI:
                            'map': {'background': [('active', '#4A6FA5')]}}
         })
         self.style.theme_use('custom_theme')
-    
+
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode"""
+        self.is_fullscreen = not self.is_fullscreen
+        self.root.attributes('-fullscreen', self.is_fullscreen)
+        if not self.is_fullscreen:
+            # Set a reasonable default size if exiting fullscreen
+            self.root.geometry("1400x900")
+
     def setup_gui(self):
         """Create complete GUI with theme applied"""
         self.main_canvas = tk.Canvas(self.root, bg='#1E272E')
@@ -838,13 +854,17 @@ class EnterpriseMDMGUI:
         
         self.scrollable_frame.bind(
             "<Configure>",
-            lambda e: self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
+            lambda e: self.main_canvas.configure(
+                scrollregion=self.main_canvas.bbox("all"),
+                height=self.root.winfo_height() - 50,  # Adjust for status bar
+                width=self.root.winfo_width()
+            )
         )
         
         self.main_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.main_canvas.configure(yscrollcommand=scrollbar.set)
         
-        self.main_canvas.pack(side="left", fill="both", expand=True)
+        self.main_canvas.pack(side="top", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
         self.main_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
@@ -865,10 +885,14 @@ class EnterpriseMDMGUI:
         self.compliance_text.config(bg='#2D3A4B', fg='#E0E7FF', insertbackground='#E0E7FF')
         self.sanitization_results.config(bg='#2D3A4B', fg='#E0E7FF', insertbackground='#E0E7FF')
         self.report_text.config(bg='#2D3A4B', fg='#E0E7FF', insertbackground='#E0E7FF')
-    
+
+        # Update status bar with current date and time
+        self.status_bar.config(text=f"Ready - {datetime.now().strftime('%I:%M %p IST, %B %d, %Y')}")
+
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling"""
-        self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        if self.main_canvas.yview() == (0.0, 1.0):  # Only scroll if at bounds
+            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
     
     def create_device_management_tab(self):
         """Create device management tab"""
@@ -1173,7 +1197,9 @@ Only user-accessible data will be sanitized (no system files or applications).""
         self.report_text = scrolledtext.ScrolledText(report_frame, height=15, wrap='word')
         self.report_text.pack(fill='both', expand=True)
         
+        # Ensure initial content is visible
         self.report_text.insert('1.0', "Generate a report to view details here...")
+        self.report_text.see('1.0')  # Scroll to start
     
     def create_status_bar(self):
         """Create status bar"""
@@ -1183,7 +1209,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
     
     def log_message(self, message):
         """Log message to status bar and logger"""
-        self.status_bar.config(text=message)
+        self.status_bar.config(text=f"{message} - {datetime.now().strftime('%I:%M %p IST, %B %d, %Y')}")
         self.logger.info(message)
     
     def check_system_prerequisites(self):
