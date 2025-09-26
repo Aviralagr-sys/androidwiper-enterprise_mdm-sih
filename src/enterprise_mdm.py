@@ -548,10 +548,10 @@ class EnterpriseMDM:
             elif policy_type == "enable_adb":
                 result = subprocess.run(['adb', '-s', device_id, 'shell',
                                        'settings', 'put', 'global', 
-                                       'adb_enabled', str(1 if policy_value else 0)],
+                                       'adb_enabled', str(1 if policy_value.lower() == 'yes' else 0)],
                                       capture_output=True, text=True, timeout=10)
                 success = result.returncode == 0
-                details = f"ADB {'enabled' if policy_value else 'disabled'}"
+                details = f"ADB {'enabled' if policy_value.lower() == 'yes' else 'disabled'}"
                 
             else:
                 details = f"Unknown policy type: {policy_type}"
@@ -725,6 +725,14 @@ class EnterpriseMDMGUI:
         self.devices = []
         self.selected_device = None
         self.selected_device_info = None
+        # Initialize policies dictionary with default values
+        self.policies = {
+            "screen_timeout": tk.StringVar(value="15"),
+            "password_quality": tk.StringVar(value="Medium"),
+            "camera_disabled": tk.StringVar(value="No"),
+            "disable_unknown_sources": tk.StringVar(value="Yes"),
+            "enable_adb": tk.StringVar(value="No")
+        }
         
         self.setup_gui()
         
@@ -1133,8 +1141,8 @@ Only user-accessible data will be sanitized (no system files or applications).""
             policy_frame = ttk.LabelFrame(policies_frame, text=label_text, padding=10)
             policy_frame.pack(fill='x', padx=10, pady=5)
             
-            var = tk.StringVar(value=default_value)
-            self.policies[policy_type] = var
+            # Use existing StringVar from self.policies
+            var = self.policies[policy_type]
             
             if policy_type in ["screen_timeout", "password_quality"]:
                 ttk.Entry(policy_frame, textvariable=var, width=10).pack(side='left', padx=5)
@@ -1142,7 +1150,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
                 ttk.Combobox(policy_frame, textvariable=var, values=["Yes", "No"], state="readonly").pack(side='left', padx=5)
             
             ttk.Button(policy_frame, text="Apply Policy", 
-                      command=lambda p=policy_type, v=var: self.apply_policy(p, v.get())).pack(side='left', padx=5)
+                      command=lambda p=policy_type: self.apply_policy(p, var.get())).pack(side='left', padx=5)
     
     def create_reports_tab(self):
         """Create reports tab"""
