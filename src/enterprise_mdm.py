@@ -803,13 +803,9 @@ class EnterpriseMDMGUI:
         self.logger = logging.getLogger(__name__)
     
     def setup_window(self):
-        """Setup main window with custom Professional Dark Theme and fullscreen support"""
+        """Setup main window with custom Professional Dark Theme"""
         self.root.title("Enterprise Mobile Device Management System")  # Ensure full title
-        # Enable fullscreen and allow toggle with F11
-        self.root.attributes('-fullscreen', True)
-        self.is_fullscreen = True
-        self.root.bind('<F11>', lambda event: self.toggle_fullscreen())
-        self.root.bind('<Escape>', lambda event: self.toggle_fullscreen() if self.is_fullscreen else None)
+        self.root.geometry("1400x900")  # Set default window size
 
         # Adjust title font if needed to prevent truncation
         self.root.option_add('*TLabel*Font', 'Arial 18')
@@ -837,14 +833,6 @@ class EnterpriseMDMGUI:
                            'map': {'background': [('active', '#4A6FA5')]}}
         })
         self.style.theme_use('custom_theme')
-
-    def toggle_fullscreen(self):
-        """Toggle fullscreen mode"""
-        self.is_fullscreen = not self.is_fullscreen
-        self.root.attributes('-fullscreen', self.is_fullscreen)
-        if not self.is_fullscreen:
-            # Set a reasonable default size if exiting fullscreen
-            self.root.geometry("1400x900")
 
     def setup_gui(self):
         """Create complete GUI with theme applied"""
