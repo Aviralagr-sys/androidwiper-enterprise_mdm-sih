@@ -815,19 +815,19 @@ class EnterpriseMDMGUI:
         self.style = ttk.Style()
         self.style.theme_create('custom_theme', parent='default', settings={
             'TFrame': {'configure': {'background': '#2E4057'}},
-            'TLabel': {'configure': {'background': '#1E2A44', 'foreground': '#FFFFFF'}},
-            'TButton': {'configure': {'background': '#3A5F8A', 'foreground': '#FFFFFF', 'borderwidth': 0},
-                        'map': {'background': [('active', '#4D709D')], 'foreground': [('active', '#FFFFFF')]}},
-            'TEntry': {'configure': {'fieldbackground': '#2E4057', 'foreground': '#FFFFFF', 'insertcolor': '#FFFFFF', 'borderwidth': 2, 'bordercolor': '#4D709D'}},
-            'TCheckbutton': {'configure': {'background': '#2E4057', 'foreground': '#FFFFFF', 'selectcolor': '#3A5F8A'}},
-            'TRadiobutton': {'configure': {'background': '#2E4057', 'foreground': '#FFFFFF', 'selectcolor': '#3A5F8A'}},
-            'TCombobox': {'configure': {'fieldbackground': '#2E4057', 'background': '#3A5F8A', 'foreground': '#FFFFFF', 'borderwidth': 2, 'bordercolor': '#4D709D'},
+            'TLabel': {'configure': {'background': '#1E2A44', 'foreground': '#2E4057'}},
+            'TButton': {'configure': {'background': '#3A5F8A', 'foreground': '#2E4057', 'borderwidth': 0},
+                        'map': {'background': [('active', '#4D709D')], 'foreground': [('active', '#2E4057')]}},
+            'TEntry': {'configure': {'fieldbackground': '#2E4057', 'foreground': '#2E4057', 'insertcolor': '#2E4057', 'borderwidth': 2, 'bordercolor': '#4D709D'}},
+            'TCheckbutton': {'configure': {'background': '#2E4057', 'foreground': '#2E4057', 'selectcolor': '#3A5F8A'}},
+            'TRadiobutton': {'configure': {'background': '#2E4057', 'foreground': '#2E4057', 'selectcolor': '#3A5F8A'}},
+            'TCombobox': {'configure': {'fieldbackground': '#2E4057', 'background': '#3A5F8A', 'foreground': '#2E4057', 'borderwidth': 2, 'bordercolor': '#4D709D'},
                           'map': {'background': [('active', '#4D709D')]}},
-            'Treeview': {'configure': {'background': '#1E2A44', 'foreground': '#FFFFFF', 'fieldbackground': '#1E2A44'},
-                         'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#FFFFFF')]}},
+            'Treeview': {'configure': {'background': '#1E2A44', 'foreground': '#2E4057', 'fieldbackground': '#1E2A44'},
+                         'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#2E4057')]}},
             'TNotebook': {'configure': {'background': '#1E2A44'}},
             'TNotebook.Tab': {'configure': {'background': '#2E4057', 'foreground': '#2E4057'},
-                              'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#FFFFFF')]}},
+                              'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#2E4057')]}},
             'TProgressbar': {'configure': {'background': '#4D709D', 'troughcolor': '#2E4057', 'borderwidth': 0}},
             'TScrollbar': {'configure': {'background': '#1E2A44', 'troughcolor': '#1E2A44', 'arrowcolor': '#4D709D'},
                            'map': {'background': [('active', '#3A5F8A')]}}
@@ -869,10 +869,10 @@ class EnterpriseMDMGUI:
         
         self.create_status_bar()
         
-        self.device_info_text.config(bg='#2E4057', fg='#FFFFFF', insertbackground='#FFFFFF')
-        self.compliance_text.config(bg='#2E4057', fg='#FFFFFF', insertbackground='#FFFFFF')
-        self.sanitization_results.config(bg='#2E4057', fg='#FFFFFF', insertbackground='#FFFFFF')
-        self.report_text.config(bg='#2E4057', fg='#FFFFFF', insertbackground='#FFFFFF')
+        self.device_info_text.config(bg='#2E4057', fg='#2E4057', insertbackground='#2E4057')
+        self.compliance_text.config(bg='#2E4057', fg='#2E4057', insertbackground='#2E4057')
+        self.sanitization_results.config(bg='#2E4057', fg='#2E4057', insertbackground='#2E4057')
+        self.report_text.config(bg='#2E4057', fg='#2E4057', insertbackground='#2E4057')
 
         # Update status bar with current date and time
         self.status_bar.config(text=f"Ready - {datetime.now().strftime('%I:%M %p IST, %B %d, %Y')}")
@@ -899,7 +899,7 @@ class EnterpriseMDMGUI:
         status_frame.pack(fill='x', padx=10, pady=5)
         
         self.system_status_label = ttk.Label(status_frame, text="Checking system prerequisites...", 
-                                           foreground="#FFFFFF")
+                                           foreground="#2E4057")
         self.system_status_label.pack()
         
         detection_frame = ttk.LabelFrame(device_frame, text="Device Detection", padding=10)
@@ -974,7 +974,7 @@ class EnterpriseMDMGUI:
 This operation cannot be undone. Ensure you have proper authorization and backups before proceeding.
 Only user-accessible data will be sanitized (no system files or applications)."""
         
-        ttk.Label(warning_frame, text=warning_text, foreground="#FFFFFF", font=('Arial', 10, 'bold')).pack()
+        ttk.Label(warning_frame, text=warning_text, foreground="#2E4057", font=('Arial', 10, 'bold')).pack()
         
         device_frame = ttk.LabelFrame(sanitization_frame, text="Device Selection", padding=10)
         device_frame.pack(fill='x', padx=10, pady=5)
@@ -983,7 +983,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         device_info_frame.pack(fill='x')
         
         ttk.Label(device_info_frame, text="Selected Device:", font=('Arial', 10, 'bold')).pack(side='left')
-        self.selected_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="#FFFFFF")
+        self.selected_device_label = ttk.Label(device_info_frame, text="No device selected", foreground="#2E4057")
         self.selected_device_label.pack(side='left', padx=10)
         
         ttk.Button(device_info_frame, text="Refresh Device Info", 
@@ -1001,7 +1001,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         ttk.Button(auth_controls, text="Verify Authorization", 
                   command=self.verify_sanitization_auth).pack(side='left', padx=5)
         
-        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="#FFFFFF")
+        self.auth_status_label = ttk.Label(auth_frame, text="Authorization required", foreground="#2E4057")
         self.auth_status_label.pack(pady=5)
         
         standards_frame = ttk.LabelFrame(sanitization_frame, text="Sanitization Standards", padding=10)
@@ -1085,7 +1085,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
         device_frame.pack(fill='x', padx=10, pady=5)
         
         ttk.Label(device_frame, text="Selected Device:", font=('Arial', 10, 'bold')).pack(side='left')
-        self.compliance_device_label = ttk.Label(device_frame, text="No device selected", foreground="#FFFFFF")
+        self.compliance_device_label = ttk.Label(device_frame, text="No device selected", foreground="#2E4057")
         self.compliance_device_label.pack(side='left', padx=10)
         
         controls_frame = ttk.Frame(device_frame)
@@ -1192,7 +1192,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
     def create_status_bar(self):
         """Create status bar"""
         self.status_bar = ttk.Label(self.root, text="Ready", anchor='w', 
-                                  background='#2E4057', foreground='#FFFFFF')
+                                  background='#2E4057', foreground='#2E4057')
         self.status_bar.pack(side='bottom', fill='x')
     
     def log_message(self, message):
@@ -1203,7 +1203,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
     def check_system_prerequisites(self):
         """Check system prerequisites and update status"""
         success, message = self.mdm.check_prerequisites()
-        self.system_status_label.config(text=message, foreground="#FFFFFF")
+        self.system_status_label.config(text=message, foreground="#2E4057")
         return success
     
     def refresh_devices(self):
@@ -1254,14 +1254,14 @@ Only user-accessible data will be sanitized (no system files or applications).""
     def update_sanitization_device_info(self):
         """Update sanitization-related device information"""
         if not self.selected_device or not self.selected_device_info:
-            self.selected_device_label.config(text="No device selected", foreground="#FFFFFF")
+            self.selected_device_label.config(text="No device selected", foreground="#2E4057")
             self.sanitization_status.config(text="No device selected for sanitization")
             self.sanitize_button.config(state='disabled')
             self.verify_button.config(state='disabled')
             return
 
         device_name = f"{self.selected_device_info.get('brand', 'Unknown')} {self.selected_device_info.get('model', 'Device')}"
-        self.selected_device_label.config(text=device_name, foreground="#FFFFFF")
+        self.selected_device_label.config(text=device_name, foreground="#2E4057")
 
         self.sanitization_status.config(text="Device ready for sanitization")
 
@@ -1273,13 +1273,13 @@ Only user-accessible data will be sanitized (no system files or applications).""
     def update_compliance_device_info(self):
         """Update compliance-related device information"""
         if not self.selected_device or not self.selected_device_info:
-            self.compliance_device_label.config(text="No device selected", foreground="#FFFFFF")
+            self.compliance_device_label.config(text="No device selected", foreground="#2E4057")
             self.compliance_text.delete('1.0', tk.END)
             self.compliance_text.insert('1.0', "Select a device and click 'Check Compliance' to view results...")
             return
         
         device_name = f"{self.selected_device_info.get('brand', 'Unknown')} {self.selected_device_info.get('model', 'Device')}"
-        self.compliance_device_label.config(text=device_name, foreground="#FFFFFF")
+        self.compliance_device_label.config(text=device_name, foreground="#2E4057")
         self.log_message(f"Refreshed compliance info for device: {device_name}")
     
     def verify_sanitization_auth(self):
@@ -1299,10 +1299,10 @@ Only user-accessible data will be sanitized (no system files or applications).""
     def update_auth_status(self, success, message):
         """Update authorization status"""
         if success:
-            self.auth_status_label.config(text=f"✓ {message}", foreground="#FFFFFF")
+            self.auth_status_label.config(text=f"✓ {message}", foreground="#2E4057")
             self.sanitize_button.config(state='normal')
         else:
-            self.auth_status_label.config(text=f"✗ {message}", foreground="#FFFFFF")
+            self.auth_status_label.config(text=f"✗ {message}", foreground="#2E4057")
             self.sanitize_button.config(state='disabled')
     
     def scan_user_data(self):
@@ -1415,11 +1415,11 @@ Only user-accessible data will be sanitized (no system files or applications).""
             self.sanitization_results.insert('1.0', "Sanitization completed successfully:\n")
             for operation in operations:
                 self.sanitization_results.insert('end', f"- {operation['path']}: {operation['status']}\n")
-            self.sanitization_status.config(text="Sanitization completed", foreground="#FFFFFF")
+            self.sanitization_status.config(text="Sanitization completed", foreground="#2E4057")
             self.verify_button.config(state='normal')
         else:
             self.sanitization_results.insert('1.0', f"Sanitization failed: {operations}\n")
-            self.sanitization_status.config(text="Sanitization failed", foreground="#FFFFFF")
+            self.sanitization_status.config(text="Sanitization failed", foreground="#2E4057")
         
         self.sanitization_progress['value'] = 100
         self.sanitize_button.config(state='normal')
@@ -1456,7 +1456,7 @@ Only user-accessible data will be sanitized (no system files or applications).""
             self.sanitization_results.insert('end', f"- {result['path']}: {result['original_files']} files, {result['remaining_files']} remaining - {verified}\n")
         
         self.sanitization_status.config(text=f"Verification {'successful' if all_verified else 'failed'}", 
-                                      foreground="#FFFFFF")
+                                      foreground="#2E4057")
         self.verify_button.config(state='normal')
         self.log_message(f"Sanitization verification {'passed' if all_verified else 'failed'} for {self.selected_device}")
     
