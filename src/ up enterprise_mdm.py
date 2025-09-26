@@ -826,7 +826,7 @@ class EnterpriseMDMGUI:
             'Treeview': {'configure': {'background': '#1E2A44', 'foreground': '#FFFFFF', 'fieldbackground': '#1E2A44'},
                          'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#FFFFFF')]}},
             'TNotebook': {'configure': {'background': '#1E2A44'}},
-            'TNotebook.Tab': {'configure': {'background': '#2E4057', 'foreground': '#FFFFFF'},
+            'TNotebook.Tab': {'configure': {'background': '#2E4057', 'foreground': '#2E4057'},
                               'map': {'background': [('selected', '#3A5F8A')], 'foreground': [('selected', '#FFFFFF')]}},
             'TProgressbar': {'configure': {'background': '#4D709D', 'troughcolor': '#2E4057', 'borderwidth': 0}},
             'TScrollbar': {'configure': {'background': '#1E2A44', 'troughcolor': '#1E2A44', 'arrowcolor': '#4D709D'},
